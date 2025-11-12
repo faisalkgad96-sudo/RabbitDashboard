@@ -10,7 +10,7 @@ from io import BytesIO
 st.set_page_config(page_title="Neighbourhood Operations Dashboard", layout="wide")
 st.title("📊 Neighbourhood Heat Data")
 st.markdown("""
-Upload the heat data file
+Upload any heat data file as it is
 
 Toggle the sidebar to switch between areas
 """)
