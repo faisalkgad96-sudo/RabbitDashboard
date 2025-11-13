@@ -10,9 +10,7 @@ from io import BytesIO
 st.set_page_config(page_title="Neighbourhood Operations Dashboard", layout="wide")
 st.title("📊 Neighbourhood HeatData Dashboard")
 st.markdown("""
-Upload your Excel/CSV snapshot file (every 10 minutes).  
-This version fixes per-neighborhood averages, removes 'No Neighborhood', adds rides (sum), and includes full advanced insights.
-""")
+Upload the heatdata file as it is """)
 
 
 # ==========================
