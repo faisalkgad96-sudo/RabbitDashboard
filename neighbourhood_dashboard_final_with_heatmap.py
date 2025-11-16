@@ -2,275 +2,263 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
+import json
+import requests
 from io import BytesIO
 
-# ==========================
-# PAGE SETUP
-# ==========================
-st.set_page_config(page_title="Neighbourhood Operations Dashboard", layout="wide")
+# ============================================
+# STREAMLIT PAGE CONFIG
+# ============================================
+st.set_page_config(page_title="Neighbourhood HeatData Dashboard", layout="wide")
 st.title("📊 Neighbourhood HeatData Dashboard")
+
 st.markdown("""
-Upload the heatdata file as it is """)
+Upload a CSV/Excel file **OR** fetch live data directly from the Rabbit backend API.
+""")
+
+# =====================================================
+# 🔑 CORRECT RABBIT API FETCH FUNCTION (FINAL WORKING)
+# =====================================================
+def fetch_heat_data(start_date, end_date, group_by="neighborhood"):
+    """
+    Fetch HeatData from Rabbit /export endpoint.
+    Handles XLSX, CSV, or JSON responses.
+    """
+
+    url = "https://dashboard.rabbit-api.app/export"
+
+    token_value = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NzM5MzI0OTg5MzA5MmRmYTMwZjhhYTgiLCJpYXQiOjE3NjMyNzk3NjksImV4cCI6MTc2NTg3MTc2OX0.Kh3RxvQmV5eQJmUsVluS04FFc1sUjfA7Fq3yGnVlfbk"
+
+    headers = {
+        "Authorization": f"Bearer {token_value}",
+        "Content-Type": "application/json"
+    }
+
+    filters_payload = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "areas": [],
+        "groupBy": group_by
+    }
+
+    payload = {
+        "module": "HeatData",
+        "filters": json.dumps(filters_payload)
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code != 200:
+        st.error(f"❌ API Error {response.status_code}")
+        st.code(response.text)
+        return None
+
+    content_type = response.headers.get("Content-Type", "")
+
+    # --- Excel
+    if "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
+        return pd.read_excel(BytesIO(response.content))
+
+    # --- CSV
+    if "text/csv" in content_type or "application/csv" in content_type:
+        return pd.read_csv(BytesIO(response.content))
+
+    # --- JSON (error fallback)
+    try:
+        return pd.DataFrame(response.json())
+    except:
+        st.error("❌ Unknown API response format.")
+        return None
 
 
-# ==========================
-# FILE UPLOAD
-# ==========================
-uploaded = st.file_uploader("📂 Upload Excel or CSV file", type=["xlsx", "xls", "csv"])
+# =====================================================
+# API FETCH USER INTERFACE
+# =====================================================
+st.subheader("🔌 Fetch Live HeatData from Rabbit API")
 
-if uploaded is not None:
+with st.expander("Fetch from API"):
+    colA, colB = st.columns(2)
+    with colA:
+        api_start = st.date_input("Start Date")
+    with colB:
+        api_end = st.date_input("End Date")
 
-    # Load data
-    if uploaded.name.endswith(".csv"):
-        df = pd.read_csv(uploaded, encoding="utf-8")
-    else:
-        df = pd.read_excel(uploaded)
+    fetch_btn = st.button("⚡ Fetch Live Data")
 
-    df.columns = df.columns.str.strip()
+df = None
 
-    # Key columns
-    col_area   = "Area"
-    col_neigh  = "Neighborhood"
-    col_start  = "Start Date - Local"
-    col_rides  = "Rides"
-    col_sessions = "Sessions"
-    col_active = "Active Vehicles"
-    col_urgent = "Urgent Vehicles"
+if fetch_btn:
+    with st.spinner("Fetching from Rabbit API..."):
+        start_str = f"{api_start}T00:00:00.000Z"
+        end_str = f"{api_end}T23:59:00.000Z"
 
-    # Time processing
-    df[col_start] = pd.to_datetime(df[col_start], errors="coerce")
-    df["_local_time"] = df[col_start]
-    df["_hour"] = df["_local_time"].dt.hour
-    df["_date"] = df["_local_time"].dt.date
+        df = fetch_heat_data(start_str, end_str)
 
-    # ==========================
-    # FILTERS
-    # ==========================
-    area_list = sorted(df[col_area].dropna().unique())
-    selected_area = st.sidebar.selectbox("🏙️ Choose Area", area_list)
-    date_range = st.sidebar.date_input("📅 Select Date Range", [df["_date"].min(), df["_date"].max()])
-
-    df_filtered = df[
-        (df[col_area] == selected_area)
-        & (df["_date"] >= date_range[0])
-        & (df["_date"] <= date_range[-1])
-        & (df[col_neigh].str.lower() != "no neighborhood")
-    ].copy()
-
-    # ==========================
-    # NEIGHBORHOOD SUMMARY
-    # ==========================
-    st.markdown(f"### 📍 Neighborhood Breakdown — {selected_area}")
-
-    neighborhood_summary = []
-    for n in df_filtered[col_neigh].dropna().unique():
-        sub = df_filtered[df_filtered[col_neigh] == n]
-
-        total_rides = sub[col_rides].sum()
-        total_sessions = sub[col_sessions].sum()
-        total_active = sub[col_active].sum()
-        snapshots = sub["_local_time"].nunique()
-        snapshots = snapshots if snapshots > 0 else 1
-
-        avg_active = total_active / snapshots
-        ratio = total_rides / avg_active if avg_active != 0 else 0
-
-        neighborhood_summary.append([
-            n,
-            total_rides,
-            total_sessions,
-            round(avg_active, 2),
-            round(ratio, 2)
-        ])
-
-    agg = pd.DataFrame(neighborhood_summary, columns=[
-        "Neighborhood", "Rides", "Sessions", "Active (avg)", "Ratio"
-    ])
-
-    st.dataframe(agg, use_container_width=True)
+        if df is not None:
+            st.success("✅ Live data fetched successfully!")
+            st.dataframe(df.head())
+        else:
+            st.error("❌ Failed to fetch HeatData.")
 
 
-    # ==========================
-    # HOURLY HEATMAP (SESSIONS)
-    # ==========================
-    st.markdown("### 🔥 Hourly Operations Heatmap")
+# =====================================================
+# FILE UPLOAD FALLBACK
+# =====================================================
+if df is None:
+    uploaded = st.file_uploader("📂 Upload Excel/CSV file", type=["xlsx", "xls", "csv"])
+    if uploaded:
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(uploaded)
+        else:
+            df = pd.read_excel(uploaded)
 
-    # IMPORTANT: include rides in hourly groupby
-    hourly = (
-        df_filtered.groupby([col_neigh, "_hour"])
-        .agg({
-            col_sessions: "sum",
-            col_rides: "sum",
-            col_active: "sum",
-            col_urgent: "sum"
-        })
-        .reset_index()
-    )
-
-    snapshots = (
-        df_filtered.groupby([col_neigh, "_hour"])["_local_time"]
-        .nunique()
-        .reset_index()
-        .rename(columns={"_local_time": "Snapshots"})
-    )
-
-    hourly = hourly.merge(snapshots, on=[col_neigh, "_hour"], how="left")
-    hourly["Active (avg)"] = (hourly[col_active] / hourly["Snapshots"]).round(2)
-    hourly["Urgent (avg)"] = (hourly[col_urgent] / hourly["Snapshots"]).round(2)
-
-    heatmap = alt.Chart(hourly).mark_rect().encode(
-        x=alt.X("_hour:O", title="Hour"),
-        y=alt.Y(f"{col_neigh}:O", title="Neighborhood"),
-        color=alt.Color(col_sessions + ":Q", title="Sessions", scale=alt.Scale(scheme="orangered")),
-        tooltip=[col_neigh, "_hour", col_sessions, "Active (avg)", "Urgent (avg)"]
-    ).properties(width="container", height=400)
-
-    st.altair_chart(heatmap, use_container_width=True)
-
-    
-    # ==========================
-    # TREND CHART — ACTIVE + URGENT + RIDES (SUM)
-    # ==========================
-    st.markdown("### 📈 Hourly Active, Urgent & Rides Trend")
-
-    hourly_summary = (
-        df_filtered.groupby("_hour")
-        .agg({
-            col_active: "sum",
-            col_urgent: "sum",
-            col_rides: "sum"   # ← rides sum added
-        })
-        .reset_index()
-    )
-
-    hourly_summary["Snapshots"] = df_filtered.groupby("_hour")["_local_time"].nunique().values
-    hourly_summary["Active (avg)"] = (hourly_summary[col_active] / hourly_summary["Snapshots"]).round(2)
-    hourly_summary["Urgent (avg)"] = (hourly_summary[col_urgent] / hourly_summary["Snapshots"]).round(2)
-    hourly_summary["Rides (sum)"]  = hourly_summary[col_rides]
-
-    melted = hourly_summary.melt(
-        id_vars="_hour",
-        value_vars=["Active (avg)", "Urgent (avg)", "Rides (sum)"],
-        var_name="Metric",
-        value_name="Value"
-    )
-
-    trend_chart = alt.Chart(melted).mark_line(point=True).encode(
-        x=alt.X("_hour:O", title="Hour"),
-        y="Value:Q",
-        color="Metric:N",
-        tooltip=["_hour", "Metric", "Value"]
-    ).properties(width="container", height=400)
-
-    st.altair_chart(trend_chart, use_container_width=True)
+# Stop if no data loaded
+if df is None:
+    st.info("Upload a file or fetch remote CSV to proceed.")
+    st.stop()
 
 
-    # ==========================
-    # EXPORT SECTION
-    # ==========================
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        agg.to_excel(writer, index=False, sheet_name="Neighborhood Summary")
-        hourly.to_excel(writer, index=False, sheet_name="Hourly Data")
-        hourly_summary.to_excel(writer, index=False, sheet_name="Hourly Summary")
+# =====================================================
+# CLEAN + VALIDATE COLUMNS
+# =====================================================
+df.columns = df.columns.str.strip()
 
-    st.download_button(
-        label="📥 Download Data (Excel)",
-        data=output.getvalue(),
-        file_name="neighborhood_operations.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+required_cols = [
+    "Area", "Neighborhood", "Start Date - Local",
+    "Sessions", "Rides", "Active Vehicles", "Urgent Vehicles"
+]
+
+if not all(col in df.columns for col in required_cols):
+    st.error("❌ Missing required columns in dataset.")
+    st.write("Found columns:", list(df.columns))
+    st.stop()
 
 
-    # ==========================
-    # 🚀 ADVANCED INSIGHTS
-    # ==========================
-    st.markdown("---")
-    st.markdown("## 🧠 Advanced Insights & Optimization Tools")
+# =====================================================
+# TIME PROCESSING
+# =====================================================
+df["Start Date - Local"] = pd.to_datetime(df["Start Date - Local"], errors="coerce")
+df["_local_time"] = df["Start Date - Local"]
+df["_hour"] = df["_local_time"].dt.hour
+df["_date"] = df["_local_time"].dt.date.astype(str)
 
-    # 1️⃣ UTILIZATION HEATMAP
-    st.markdown("### 🔥 Hourly Utilization Heatmap")
+# =====================================================
+# SIDEBAR FILTERS
+# =====================================================
+areas = sorted(df["Area"].unique())
+selected_area = st.sidebar.selectbox("🏙️ Choose Area", areas)
 
-    hourly["Utilization"] = (
-        hourly[col_rides] / hourly["Active (avg)"]
-    ).replace([np.nan, np.inf], 0)
+dates = sorted(df["_date"].unique())
+selected_dates = st.sidebar.multiselect("📅 Select Days", dates, default=[dates[0]])
 
-    util_heatmap = alt.Chart(hourly).mark_rect().encode(
-        x=alt.X("_hour:O", title="Hour"),
-        y=alt.Y(f"{col_neigh}:O", title="Neighborhood"),
-        color=alt.Color("Utilization:Q", title="Rides per Active Scooter",
-                        scale=alt.Scale(scheme="tealblues")),
-        tooltip=[col_neigh, "_hour", "Utilization", "Active (avg)", col_rides]
-    ).properties(width="container", height=400)
+df_filtered = df[
+    (df["Area"] == selected_area) &
+    (df["_date"].isin(selected_dates)) &
+    (df["Neighborhood"].str.lower() != "no neighborhood")
+]
 
-    st.altair_chart(util_heatmap, use_container_width=True)
 
-    # 3️⃣ TOP / BOTTOM NEIGHBORHOODS
-    st.markdown("### 🏆 Top & Bottom Performing Neighborhoods")
+# =====================================================
+# NEIGHBORHOOD SUMMARY
+# =====================================================
+st.subheader(f"📍 Neighborhood Breakdown — {selected_area}")
 
-    col1, col2 = st.columns(2)
+summary = []
+for n in df_filtered["Neighborhood"].unique():
+    sub = df_filtered[df_filtered["Neighborhood"] == n]
 
-    with col1:
-        st.subheader("🔥 Top 3 (Ratio)")
-        st.table(agg.sort_values("Ratio", ascending=False).head(3))
+    rides = sub["Rides"].sum()
+    sessions = sub["Sessions"].sum()
+    active_total = sub["Active Vehicles"].sum()
+    snapshots = sub["_local_time"].nunique() or 1
 
-    with col2:
-        st.subheader("❄️ Bottom 3 (Ratio)")
-        st.table(agg.sort_values("Ratio", ascending=True).head(3))
+    avg_active = active_total / snapshots
+    ratio = rides / avg_active if avg_active else 0
 
-    # 4️⃣ HOURLY DEMAND FORECAST
-    st.markdown("### 📈 Hourly Ride Demand Forecast")
+    summary.append([n, rides, sessions, round(avg_active,2), round(ratio,2)])
 
-    hourly_demand = (
-        df_filtered.groupby("_hour")[col_rides]
-        .sum()
-        .reset_index()
-        .sort_values("_hour")
-    )
-    hourly_demand["Forecast"] = hourly_demand[col_rides].rolling(3, min_periods=1).mean()
+agg = pd.DataFrame(summary, columns=["Neighborhood", "Rides", "Sessions", "Active (avg)", "Ratio"])
+st.dataframe(agg, use_container_width=True)
 
-    base = alt.Chart(hourly_demand).mark_line(point=True, color="#0077b6").encode(
-        x=alt.X("_hour:O", title="Hour"),
-        y=alt.Y(col_rides + ":Q", title="Rides"),
-        tooltip=["_hour", col_rides]
-    )
-    forecast = alt.Chart(hourly_demand).mark_line(
-        point=True, strokeDash=[5,5], color="orange"
-    ).encode(
-        x="_hour:O",
-        y="Forecast:Q",
-        tooltip=["_hour", "Forecast"]
-    )
 
-    st.altair_chart(base + forecast, use_container_width=True)
+# =====================================================
+# HOURLY HEATMAP
+# =====================================================
+st.subheader("🔥 Hourly Operations Heatmap")
 
-    # 9️⃣ FLEET SIMULATION
-    st.markdown("### ⚙️ Fleet Optimization Simulator")
+hourly = (
+    df_filtered.groupby(["Neighborhood", "_hour"])
+    .agg({
+        "Sessions": "sum",
+        "Active Vehicles": "sum",
+        "Urgent Vehicles": "sum",
+        "Rides": "sum"
+    })
+    .reset_index()
+)
 
-    fleet_multiplier = st.slider("Adjust Fleet Size (%)", 50, 200, 100, step=10)
+snapshots = (
+    df_filtered.groupby(["Neighborhood","_hour"])["_local_time"]
+    .nunique().reset_index().rename(columns={"_local_time":"Snapshots"})
+)
 
-    agg["Adjusted Active (avg)"] = agg["Active (avg)"] * (fleet_multiplier / 100)
-    agg["Projected Rides"] = agg["Ratio"] * agg["Adjusted Active (avg)"]
-    agg["Projected Ratio"] = (
-        agg["Projected Rides"] / agg["Adjusted Active (avg)"]
-    ).replace([np.nan, np.inf], 0)
+hourly = hourly.merge(snapshots, on=["Neighborhood","_hour"], how="left")
+hourly["Active (avg)"] = hourly["Active Vehicles"] / hourly["Snapshots"]
 
-    st.dataframe(
-        agg[[
-            "Neighborhood",
-            "Active (avg)",
-            "Adjusted Active (avg)",
-            "Rides",
-            "Projected Rides",
-            "Projected Ratio"
-        ]],
-        use_container_width=True
-    )
+heatmap = alt.Chart(hourly).mark_rect().encode(
+    x="_hour:O",
+    y="Neighborhood:O",
+    color=alt.Color("Sessions:Q", scale=alt.Scale(scheme="orangered")),
+    tooltip=["Neighborhood","_hour","Sessions","Active (avg)"]
+).properties(width=900, height=400)
 
-    st.success(
-        f"🚀 Total projected rides with fleet = {fleet_multiplier}%: "
-        f"**{int(agg['Projected Rides'].sum()):,} rides**"
-    )
+st.altair_chart(heatmap, use_container_width=True)
 
-else:
-    st.info("👆 Upload a data file to begin.")
+
+# =====================================================
+# ADVANCED INSIGHTS
+# =====================================================
+st.subheader("🧠 Advanced Insights")
+
+hourly["Utilization"] = (hourly["Rides"] / hourly["Active (avg)"]).replace([np.nan, np.inf], 0)
+
+util = alt.Chart(hourly).mark_rect().encode(
+    x="_hour:O",
+    y="Neighborhood:O",
+    color=alt.Color("Utilization:Q", scale=alt.Scale(scheme="tealblues")),
+    tooltip=["Neighborhood","_hour","Utilization"]
+).properties(width=900, height=400)
+
+st.altair_chart(util, use_container_width=True)
+
+
+# =====================================================
+# TOP & BOTTOM
+# =====================================================
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("🏆 Top 3 Neighborhoods")
+    st.table(agg.sort_values("Ratio", ascending=False).head(3))
+
+with col2:
+    st.subheader("🐢 Bottom 3 Neighborhoods")
+    st.table(agg.sort_values("Ratio").head(3))
+
+
+# =====================================================
+# DEMAND FORECAST
+# =====================================================
+st.subheader("📈 Hourly Demand Forecast")
+
+hourly_demand = df_filtered.groupby("_hour")["Rides"].sum().reset_index()
+hourly_demand["Forecast"] = hourly_demand["Rides"].rolling(3, min_periods=1).mean()
+
+base = alt.Chart(hourly_demand).mark_line(point=True).encode(
+    x="_hour:O", y="Rides:Q"
+)
+
+forecast = alt.Chart(hourly_demand).mark_line(point=True, strokeDash=[5,5], color="orange").encode(
+    x="_hour:O", y="Forecast:Q"
+)
+
+st.altair_chart(base + forecast, use_container_width=True)
