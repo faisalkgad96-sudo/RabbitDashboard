@@ -1,0 +1,6 @@
+quartile,min,max,label
+Q1,6.0,26.0,Low Performer
+Q2,27.0,47.0,Mid Performer
+Q3,48.0,68.0,Upper-Mid Performer
+Q4,69.0,90.0,High Performer
+Q5,91.0,200.0,Max Performer

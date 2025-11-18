@@ -1,0 +1,12 @@
+case,moto,tric
+Low Battery,2,0
+No Ride Photo,2,0
+No Rides Today,2,0
+Not Updating,3,0
+Out Of Fence,3,0
+Unlocked Without Ride,3,0
+Vehicle Battery Unlocked,2,0
+Vehicle Malfunction,2,0
+Active,0,2
+Deactive,0,2
+Swap,0,1
