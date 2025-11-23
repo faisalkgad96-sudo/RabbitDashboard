@@ -10,14 +10,29 @@ import datetime # Import datetime for date operations
 # 1. Page Config
 st.set_page_config(page_title="Neighbourhood Fulfillment Dashboard", layout="wide", page_icon="📊")
 
-# 2. Custom CSS to clean up UI
+# 2. Custom CSS to clean up UI and FIX the metric background
 st.markdown("""
 <style>
+    /* FIX: Removed explicit light background from .stMetric 
+    to prevent white background on dark mode.
+    The primary fix is added below targeting the deep container.
+    */
     .stMetric {
-        background-color: #f0f2f6;
+        /* Only keep structural styling, let Streamlit handle the default background color */
         padding: 10px;
         border-radius: 10px;
     }
+    
+    /* CRITICAL FIX: Target the specific metric container class (emotion cache) 
+    and force a dark background color that matches the app's dark theme. 
+    This overrides any accidental light styling.
+    */
+    .st-emotion-cache-1kyxaut { 
+        background-color: #262730; /* Dark background color */
+        border-radius: 0.5rem; 
+        padding: 1rem;
+    }
+
     /* Style for the local radio buttons */
     .stRadio > label {
         padding-right: 15px;
@@ -227,7 +242,7 @@ with st.sidebar:
                         st.success("Data loaded successfully!")
                         st.rerun()
                     elif raw_df is not None and raw_df.empty:
-                            st.warning("Data fetched, but it is empty.")
+                        st.warning("Data fetched, but it is empty.")
                         
 
     else:
