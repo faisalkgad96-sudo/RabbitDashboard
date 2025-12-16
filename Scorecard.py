@@ -607,3 +607,67 @@ with col_d2:
     st.download_button("Download agent_aggregates.csv", csv_agent, file_name="agent_aggregates.csv", mime="text/csv")
 
 st.success("Area View ready.")
+
+
+
+# ================= TIME TO FIRST / LAST ACTION METRICS =================
+# Requires an 'Action' column with OPS_USER_CHECKIN / OPS_USER_CHECKOUT
+
+action_col_guess = None
+for cand in ["action", "event", "activity", "type"]:
+    if cand in cols_lower:
+        action_col_guess = cols_lower[cand]
+        break
+
+if action_col_guess:
+    df["_action_clean"] = clean_text_series(df[action_col_guess]).str.upper()
+
+    time_rows = []
+    for (agent, day), g in df.groupby(["_agent_clean", "_created_day"]):
+        g = g.sort_values("_created_dt")
+
+        checkins = g[g["_action_clean"] == "OPS_USER_CHECKIN"]
+        checkouts = g[g["_action_clean"] == "OPS_USER_CHECKOUT"]
+
+        if checkins.empty or checkouts.empty:
+            continue
+
+        checkin_time = checkins["_created_dt"].iloc[0]
+        checkout_time = checkouts["_created_dt"].iloc[-1]
+
+        actions = g[~g["_action_clean"].isin(["OPS_USER_CHECKIN", "OPS_USER_CHECKOUT"])]
+
+        first_action = actions[actions["_created_dt"] > checkin_time]
+        last_action = actions[actions["_created_dt"] < checkout_time]
+
+        time_rows.append({
+            "Agent": agent,
+            "Day": day,
+            "Time to First Action (min)": (
+                (first_action["_created_dt"].iloc[0] - checkin_time).total_seconds() / 60
+                if not first_action.empty else None
+            ),
+            "Time Since Last Action (min)": (
+                (checkout_time - last_action["_created_dt"].iloc[-1]).total_seconds() / 60
+                if not last_action.empty else None
+            ),
+        })
+
+    time_metrics_df = pd.DataFrame(time_rows)
+
+    agent_time_summary = (
+        time_metrics_df
+        .groupby("Agent", dropna=False)
+        .agg(
+            Avg_Time_to_First_Action_Min=("Time to First Action (min)", "mean"),
+            Avg_Time_Since_Last_Action_Min=("Time Since Last Action (min)", "mean"),
+        )
+        .round(1)
+        .reset_index()
+    )
+else:
+    agent_time_summary = pd.DataFrame(columns=[
+        "Agent",
+        "Avg_Time_to_First_Action_Min",
+        "Avg_Time_Since_Last_Action_Min"
+    ])
