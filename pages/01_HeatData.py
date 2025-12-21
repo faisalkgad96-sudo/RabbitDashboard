@@ -8,7 +8,7 @@ from io import BytesIO
 import datetime # Import datetime for date operations
 
 # 1. Page Config
-st.set_page_config(page_title="Neighbourhood Fulfillment Dashboar", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Neighbourhood Fulfillment Dashboard", layout="wide", page_icon="📊")
 
 # 2. Custom CSS to clean up UI and FIX the metric background
 st.markdown("""
