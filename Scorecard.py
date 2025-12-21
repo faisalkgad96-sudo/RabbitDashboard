@@ -5,8 +5,8 @@ import numpy as np
 import altair as alt
 import os
 
-st.set_page_config(layout="wide", page_title="Scorecard — Area View ")
-st.title("🏆 Scorecard — Area View ")
+st.set_page_config(layout="wide", page_title="Scorecard —  ")
+st.title("🏆 Scorecard —  ")
 
 # Settings
 SETTINGS_DIR = "settings"
