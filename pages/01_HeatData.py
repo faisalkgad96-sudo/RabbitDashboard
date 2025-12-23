@@ -732,10 +732,27 @@ agg_config_4 = get_aggregation_for_granularity(
 with col_i:
     st.info("📊 Compare fulfillment patterns. Look for consistent performers vs volatility.")
 
+# Show neighborhood selector above chart
+neighborhoods_in_chart = sorted(agg_config_4["df"]["Neighborhood"].unique())
+st.markdown(f"**{len(neighborhoods_in_chart)} neighborhoods** in this view")
+
+selected_neighborhoods = st.multiselect(
+    "Filter by neighborhoods (leave empty to show all):",
+    options=neighborhoods_in_chart,
+    default=[],
+    key="trend_neighborhood_filter"
+)
+
+# Filter data if neighborhoods are selected
+if selected_neighborhoods:
+    trend_data = agg_config_4["df"][agg_config_4["df"]["Neighborhood"].isin(selected_neighborhoods)]
+else:
+    trend_data = agg_config_4["df"]
+
 # Create selection for interactivity
 selection = alt.selection_point(fields=['Neighborhood'], bind='legend', on='click')
 
-trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
+trend_chart = alt.Chart(trend_data).mark_line(
     point=alt.OverlayMarkDef(size=120, filled=True, opacity=1),
     strokeWidth=5,
     opacity=1
@@ -772,16 +789,19 @@ trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
         "Neighborhood:N", 
         scale=alt.Scale(scheme='category20'),
         legend=alt.Legend(
-            titleFontSize=13,
-            labelFontSize=12,
+            titleFontSize=12,
+            labelFontSize=11,
             titleColor='white',
             labelColor='white',
-            symbolSize=250,
-            symbolStrokeWidth=4,
-            title="Neighborhood (Click to filter)"
+            symbolSize=200,
+            symbolStrokeWidth=3,
+            title="Neighborhood (Click to filter)",
+            orient='right',
+            columns=1,
+            labelLimit=200
         )
     ),
-    opacity=alt.condition(selection, alt.value(1), alt.value(0.15)),
+    opacity=alt.condition(selection, alt.value(1), alt.value(0.2)),
     strokeWidth=alt.condition(selection, alt.value(5), alt.value(2)),
     tooltip=[
         alt.Tooltip("Neighborhood:N", title="Neighborhood"),
@@ -792,13 +812,16 @@ trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
     ]
 ).add_params(
     selection
-).properties(height=550).configure_view(
+).properties(
+    width='container',
+    height=550
+).configure_view(
     strokeWidth=0
 ).configure(
     background='#0e1117'
 )
 
-st.caption("💡 **Tip:** Click on neighborhood names in the legend to highlight specific lines")
+st.caption("💡 **Tip:** Use the dropdown above to filter specific neighborhoods, or click legend items to highlight")
 
 st.altair_chart(trend_chart, use_container_width=True)
 st.markdown("---")
@@ -834,11 +857,14 @@ dynamic_long = dynamic_total.melt(
     value_name="Count"
 )
 
+# Create selection for demand chart
+demand_selection = alt.selection_point(fields=['Metric'], bind='legend', on='click')
+
 demand_chart = alt.Chart(dynamic_long).mark_line(
-    point=alt.OverlayMarkDef(size=100, filled=True, opacity=1),
-    strokeWidth=4,
+    point=alt.OverlayMarkDef(size=150, filled=True, opacity=1),
+    strokeWidth=6,
     interpolate='monotone',
-    opacity=0.9
+    opacity=1
 ).encode(
     x=alt.X(
         f"{agg_config_5['time_dim']}:O",
@@ -850,7 +876,8 @@ demand_chart = alt.Chart(dynamic_long).mark_line(
             titleFontSize=14,
             labelColor='white',
             titleColor='white',
-            gridColor='rgba(128, 128, 128, 0.2)'
+            gridColor='rgba(128, 128, 128, 0.3)',
+            grid=True
         )
     ),
     y=alt.Y(
@@ -861,30 +888,41 @@ demand_chart = alt.Chart(dynamic_long).mark_line(
             titleFontSize=14,
             labelColor='white',
             titleColor='white',
-            gridColor='rgba(128, 128, 128, 0.2)'
+            gridColor='rgba(128, 128, 128, 0.3)',
+            grid=True
         )
     ),
     color=alt.Color(
         "Metric:N", 
-        scale=alt.Scale(scheme='set2'),
+        scale=alt.Scale(
+            domain=['Rides', 'Sessions', 'Urgent_Vehicles'],
+            range=['#00D9FF', '#FF6B9D', '#FFA500']  # Bright cyan, pink, orange
+        ),
         legend=alt.Legend(
             titleFontSize=13,
             labelFontSize=12,
             titleColor='white',
             labelColor='white',
-            symbolSize=200,
-            symbolStrokeWidth=3
+            symbolSize=250,
+            symbolStrokeWidth=4,
+            title="Metric (Click to filter)"
         )
     ),
+    opacity=alt.condition(demand_selection, alt.value(1), alt.value(0.2)),
+    strokeWidth=alt.condition(demand_selection, alt.value(6), alt.value(2)),
     tooltip=[
         alt.Tooltip(agg_config_5["time_dim"], title=agg_config_5['time_title']),
         alt.Tooltip("Metric:N", title="Metric"),
         alt.Tooltip("Count:Q", format=",.1f", title="Count")
     ]
-).properties(height=450).configure_view(
+).add_params(
+    demand_selection
+).properties(height=500).configure_view(
     strokeWidth=0
 ).configure(
     background='#0e1117'
 )
+
+st.caption("💡 **Tip:** Click on metric names in the legend to highlight specific metrics")
 
 st.altair_chart(demand_chart, use_container_width=True)
