@@ -731,6 +731,15 @@ agg_config_4 = get_aggregation_for_granularity(
 
 with col_i:
     st.info("📊 Compare fulfillment patterns. Look for consistent performers vs volatility.")
+    
+    # Debug expander to see data stats
+    with st.expander("🔍 Debug: View Data Summary"):
+        st.write(f"**Total data points:** {len(agg_config_4['df'])}")
+        st.write(f"**Unique neighborhoods:** {agg_config_4['df']['Neighborhood'].nunique()}")
+        st.write(f"**Neighborhoods list:**")
+        st.write(sorted(agg_config_4['df']['Neighborhood'].unique().tolist()))
+        st.write(f"**Sample data:**")
+        st.dataframe(agg_config_4['df'].head(10), use_container_width=True)
 
 # Show neighborhood selector above chart
 neighborhoods_in_chart = sorted(agg_config_4["df"]["Neighborhood"].unique())
@@ -926,3 +935,320 @@ demand_chart = alt.Chart(dynamic_long).mark_line(
 st.caption("💡 **Tip:** Click on metric names in the legend to highlight specific metrics")
 
 st.altair_chart(demand_chart, use_container_width=True)
+
+st.markdown("---")
+
+# ==============================
+# 6. INSIGHTS & RECOMMENDATIONS
+# ==============================
+st.markdown("## 💡 Key Insights & Recommendations")
+st.caption("AI-generated insights based on your data analysis")
+
+# Create two tabs for Area-level and Neighborhood-level insights
+tab1, tab2 = st.tabs(["🌍 Area-Level Insights", "🏘️ Neighborhood-Level Insights"])
+
+with tab1:
+    st.markdown("### Area Performance Summary")
+    
+    # Area-level calculations
+    area_fulfillment = (total_rides / total_sessions * 100) if total_sessions > 0 else 0
+    area_utilization = (total_rides / total_avg_active_scooters) if total_avg_active_scooters > 0 else 0
+    
+    # Determine peak times
+    hourly_demand = df_filtered.groupby("_hour").agg(
+        Total_Rides=("Rides", "sum"),
+        Total_Sessions=("Sessions", "sum")
+    ).reset_index()
+    peak_hour = hourly_demand.loc[hourly_demand["Total_Sessions"].idxmax(), "_hour"]
+    lowest_hour = hourly_demand.loc[hourly_demand["Total_Sessions"].idxmin(), "_hour"]
+    
+    # Time interval analysis
+    interval_demand = df_filtered.groupby("_time_interval").agg(
+        Total_Rides=("Rides", "sum"),
+        Total_Sessions=("Sessions", "sum"),
+        Fulfillment=("Rides", "sum")
+    ).reset_index()
+    interval_demand["Fulfillment_Rate"] = interval_demand["Total_Rides"] / interval_demand["Total_Sessions"]
+    best_interval = interval_demand.loc[interval_demand["Fulfillment_Rate"].idxmax(), "_time_interval"]
+    worst_interval = interval_demand.loc[interval_demand["Fulfillment_Rate"].idxmin(), "_time_interval"]
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📊 Overall Performance")
+        
+        # Performance assessment
+        if area_fulfillment >= 80:
+            performance_status = "🟢 **Excellent**"
+            performance_desc = "The area is performing very well with strong fulfillment rates."
+        elif area_fulfillment >= 65:
+            performance_status = "🟡 **Good**"
+            performance_desc = "The area is performing adequately but has room for improvement."
+        else:
+            performance_status = "🔴 **Needs Attention**"
+            performance_desc = "The area is underperforming and requires immediate action."
+        
+        st.markdown(f"**Status:** {performance_status}")
+        st.write(performance_desc)
+        st.write(f"- Overall Fulfillment Rate: **{area_fulfillment:.1f}%**")
+        st.write(f"- Average Utilization: **{area_utilization:.2f} rides/vehicle**")
+        st.write(f"- Total Missed Opportunities: **{total_missed_opportunity:,}**")
+        st.write(f"- Opportunity Cost: **{(total_missed_opportunity/total_sessions*100):.1f}%** of demand unmet")
+        
+        st.markdown("#### ⏰ Demand Patterns")
+        st.write(f"- **Peak Hour:** {peak_hour}:00 (highest demand)")
+        st.write(f"- **Quietest Hour:** {lowest_hour}:00 (lowest demand)")
+        st.write(f"- **Best Time Interval:** {best_interval}")
+        st.write(f"- **Weakest Time Interval:** {worst_interval}")
+    
+    with col2:
+        st.markdown("#### 🎯 Strategic Recommendations")
+        
+        recommendations = []
+        
+        # Fulfillment-based recommendations
+        if area_fulfillment < 70:
+            recommendations.append({
+                "priority": "🔴 HIGH",
+                "action": "Increase Vehicle Supply",
+                "detail": f"With {area_fulfillment:.1f}% fulfillment, you're losing {(100-area_fulfillment):.1f}% of potential revenue. Consider adding {int(total_missed_opportunity/num_selected_days/5)} vehicles."
+            })
+        
+        # Utilization-based recommendations
+        if area_utilization < 3:
+            recommendations.append({
+                "priority": "🟡 MEDIUM",
+                "action": "Optimize Vehicle Distribution",
+                "detail": f"Utilization is {area_utilization:.2f} rides/vehicle. Redistribute vehicles from low-demand to high-demand neighborhoods."
+            })
+        elif area_utilization > 8:
+            recommendations.append({
+                "priority": "🟢 OPPORTUNITY",
+                "action": "Scale Up Operations",
+                "detail": f"Excellent utilization ({area_utilization:.2f} rides/vehicle) indicates strong demand. Consider expanding fleet."
+            })
+        
+        # Time-based recommendations
+        worst_interval_data = interval_demand[interval_demand["_time_interval"] == worst_interval].iloc[0]
+        worst_fulfillment = worst_interval_data["Fulfillment_Rate"] * 100
+        
+        if worst_fulfillment < 65:
+            recommendations.append({
+                "priority": "🟡 MEDIUM",
+                "action": f"Address {worst_interval} Performance",
+                "detail": f"Fulfillment drops to {worst_fulfillment:.1f}% during this period. Adjust rebalancing schedule or add temporary vehicles."
+            })
+        
+        # Missed opportunity recommendations
+        missed_opp_rate = (total_missed_opportunity / total_sessions * 100)
+        if missed_opp_rate > 30:
+            recommendations.append({
+                "priority": "🔴 HIGH",
+                "action": "Reduce Lost Revenue",
+                "detail": f"You're missing {total_missed_opportunity:,} rides ({missed_opp_rate:.1f}% of demand). This represents significant lost revenue."
+            })
+        
+        # Display recommendations
+        if recommendations:
+            for i, rec in enumerate(recommendations, 1):
+                st.markdown(f"**{rec['priority']} - {rec['action']}**")
+                st.write(rec['detail'])
+                if i < len(recommendations):
+                    st.write("")  # Spacing
+        else:
+            st.success("✅ Area is performing well! Continue monitoring for optimization opportunities.")
+    
+    # Add trend analysis
+    st.markdown("---")
+    st.markdown("#### 📈 Trend Analysis")
+    
+    # Calculate performance by day if multiple days selected
+    if num_selected_days > 1:
+        daily_performance = df_filtered.groupby("_date").agg(
+            Rides=("Rides", "sum"),
+            Sessions=("Sessions", "sum")
+        ).reset_index()
+        daily_performance["Fulfillment"] = daily_performance["Rides"] / daily_performance["Sessions"] * 100
+        
+        best_day = daily_performance.loc[daily_performance["Fulfillment"].idxmax()]
+        worst_day = daily_performance.loc[daily_performance["Fulfillment"].idxmin()]
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Best Day", best_day["_date"], f"{best_day['Fulfillment']:.1f}% fulfillment")
+        col2.metric("Worst Day", worst_day["_date"], f"{worst_day['Fulfillment']:.1f}% fulfillment")
+        col3.metric("Variance", f"{daily_performance['Fulfillment'].std():.1f}%", 
+                   "High volatility" if daily_performance['Fulfillment'].std() > 10 else "Stable")
+
+with tab2:
+    st.markdown("### Neighborhood-Level Analysis")
+    
+    # Calculate comprehensive neighborhood metrics
+    neighborhood_analysis = agg.copy()
+    neighborhood_analysis["Utilization"] = np.where(
+        neighborhood_analysis["Active (Avg)"] > 0,
+        neighborhood_analysis["Rides"] / neighborhood_analysis["Active (Avg)"],
+        0
+    )
+    neighborhood_analysis["Missed_Opp_Rate"] = np.where(
+        neighborhood_analysis["Sessions"] > 0,
+        neighborhood_analysis["Missed Opportunity"] / neighborhood_analysis["Sessions"] * 100,
+        0
+    )
+    
+    # Categorize neighborhoods
+    def categorize_neighborhood(row):
+        fulfillment = row["Fulfillment Rate"]
+        utilization = row["Utilization"]
+        
+        if fulfillment >= 75 and utilization >= 5:
+            return "⭐ Star Performer"
+        elif fulfillment >= 75:
+            return "🎯 High Fulfillment"
+        elif utilization >= 5:
+            return "🔥 High Demand"
+        elif fulfillment < 60:
+            return "🔴 Critical"
+        else:
+            return "🟡 Moderate"
+    
+    neighborhood_analysis["Category"] = neighborhood_analysis.apply(categorize_neighborhood, axis=1)
+    
+    # Show category breakdown
+    st.markdown("#### 📊 Neighborhood Categories")
+    category_counts = neighborhood_analysis["Category"].value_counts()
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    cols = [col1, col2, col3, col4, col5]
+    
+    for idx, (category, count) in enumerate(category_counts.items()):
+        if idx < len(cols):
+            cols[idx].metric(category, count, f"{count/len(neighborhood_analysis)*100:.0f}%")
+    
+    st.markdown("---")
+    
+    # Top performers and underperformers
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🏆 Top 5 Performers (by RPDPV)")
+        top_performers = neighborhood_analysis.nlargest(5, "RPDPV")[
+            ["Neighborhood", "RPDPV", "Fulfillment Rate", "Utilization", "Category"]
+        ]
+        st.dataframe(
+            top_performers,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "RPDPV": st.column_config.NumberColumn("RPDPV", format="%.2f"),
+                "Fulfillment Rate": st.column_config.NumberColumn("Fulfillment %", format="%.1f%%"),
+                "Utilization": st.column_config.NumberColumn("Utilization", format="%.2f"),
+            }
+        )
+        
+        st.markdown("**Why they succeed:**")
+        top_avg_fulfillment = top_performers["Fulfillment Rate"].mean()
+        top_avg_util = top_performers["Utilization"].mean()
+        st.write(f"- Average fulfillment: **{top_avg_fulfillment:.1f}%**")
+        st.write(f"- Average utilization: **{top_avg_util:.2f} rides/vehicle**")
+        st.write("- Consistent vehicle availability during peak hours")
+    
+    with col2:
+        st.markdown("#### 🔴 Bottom 5 Performers (by RPDPV)")
+        bottom_performers = neighborhood_analysis.nsmallest(5, "RPDPV")[
+            ["Neighborhood", "RPDPV", "Fulfillment Rate", "Missed_Opp_Rate", "Category"]
+        ]
+        st.dataframe(
+            bottom_performers,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "RPDPV": st.column_config.NumberColumn("RPDPV", format="%.2f"),
+                "Fulfillment Rate": st.column_config.NumberColumn("Fulfillment %", format="%.1f%%"),
+                "Missed_Opp_Rate": st.column_config.NumberColumn("Missed Opp %", format="%.1f%%"),
+            }
+        )
+        
+        st.markdown("**Areas for improvement:**")
+        bottom_avg_fulfillment = bottom_performers["Fulfillment Rate"].mean()
+        bottom_avg_missed = bottom_performers["Missed_Opp_Rate"].mean()
+        st.write(f"- Average fulfillment: **{bottom_avg_fulfillment:.1f}%**")
+        st.write(f"- Average missed rate: **{bottom_avg_missed:.1f}%**")
+        st.write("- Need better vehicle distribution or increased supply")
+    
+    st.markdown("---")
+    
+    # Specific neighborhood insights
+    st.markdown("#### 🔍 Detailed Neighborhood Insights")
+    
+    selected_neighborhood = st.selectbox(
+        "Select a neighborhood for detailed analysis:",
+        options=sorted(neighborhood_analysis["Neighborhood"].tolist()),
+        key="insight_neighborhood_select"
+    )
+    
+    if selected_neighborhood:
+        nbh_data = neighborhood_analysis[neighborhood_analysis["Neighborhood"] == selected_neighborhood].iloc[0]
+        
+        # Get hourly data for this neighborhood
+        nbh_hourly = df_hourly_agg[df_hourly_agg["Neighborhood"] == selected_neighborhood].copy()
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(f"### {selected_neighborhood}")
+            st.markdown(f"**Category:** {nbh_data['Category']}")
+            st.metric("RPDPV Rank", f"#{neighborhood_analysis['RPDPV'].rank(ascending=False)[nbh_data.name]:.0f} of {len(neighborhood_analysis)}")
+            
+        with col2:
+            st.metric("Fulfillment Rate", f"{nbh_data['Fulfillment Rate']:.1f}%")
+            st.metric("Total Rides", f"{nbh_data['Rides']:,.0f}")
+            st.metric("Avg Vehicles", f"{nbh_data['Active (Avg)']:.1f}")
+            
+        with col3:
+            st.metric("RPDPV", f"{nbh_data['RPDPV']:.2f}")
+            st.metric("Utilization", f"{nbh_data['Utilization']:.2f}")
+            st.metric("Missed Opps", f"{nbh_data['Missed Opportunity']:,.0f}")
+        
+        # Performance assessment
+        st.markdown("**Performance Assessment:**")
+        
+        if nbh_data["Fulfillment Rate"] >= 75:
+            st.success(f"✅ {selected_neighborhood} has strong fulfillment rates. Continue current strategies.")
+        elif nbh_data["Fulfillment Rate"] >= 60:
+            st.warning(f"⚠️ {selected_neighborhood} has moderate performance. Room for improvement.")
+        else:
+            st.error(f"🔴 {selected_neighborhood} is underperforming. Immediate action needed.")
+        
+        # Specific recommendations
+        st.markdown("**Recommendations:**")
+        
+        nbh_recommendations = []
+        
+        if nbh_data["Fulfillment Rate"] < 70:
+            avg_shortage = nbh_data["Missed Opportunity"] / num_selected_days
+            nbh_recommendations.append(
+                f"🚲 Increase vehicle allocation by ~{int(avg_shortage/5)} units to address {nbh_data['Missed Opportunity']:,.0f} missed opportunities"
+            )
+        
+        if nbh_data["Utilization"] > 7:
+            nbh_recommendations.append(
+                f"📈 High utilization ({nbh_data['Utilization']:.2f}) indicates strong demand. Consider this neighborhood for expansion"
+            )
+        elif nbh_data["Utilization"] < 2:
+            nbh_recommendations.append(
+                f"📉 Low utilization ({nbh_data['Utilization']:.2f}) suggests oversupply. Redistribute {int(nbh_data['Active (Avg)'] * 0.2)} vehicles to higher-demand areas"
+            )
+        
+        # Find best and worst hours
+        if not nbh_hourly.empty:
+            best_hour = nbh_hourly.loc[nbh_hourly["Neighborhood Fulfillment Rate"].idxmax(), "_hour"]
+            worst_hour = nbh_hourly.loc[nbh_hourly["Neighborhood Fulfillment Rate"].idxmin(), "_hour"]
+            nbh_recommendations.append(
+                f"⏰ Focus rebalancing efforts before {int(worst_hour)}:00 (weakest hour). Best performance at {int(best_hour)}:00"
+            )
+        
+        if nbh_recommendations:
+            for rec in nbh_recommendations:
+                st.write(f"- {rec}")
+        else:
+            st.write("- ✅ Neighborhood is performing optimally. Maintain current operations.")
