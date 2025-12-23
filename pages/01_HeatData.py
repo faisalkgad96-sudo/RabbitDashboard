@@ -1252,3 +1252,510 @@ with tab2:
                 st.write(f"- {rec}")
         else:
             st.write("- ✅ Neighborhood is performing optimally. Maintain current operations.")
+
+st.markdown("---")
+
+# ==============================
+# 7. SMART ALLOCATION MODEL
+# ==============================
+st.markdown("## 🎯 Smart Vehicle Allocation Model")
+st.caption("Data-driven recommendations for optimal vehicle distribution based on demand patterns and historical performance")
+
+# Configuration controls
+col_config1, col_config2, col_config3 = st.columns([2, 2, 2])
+
+with col_config1:
+    allocation_granularity = st.radio(
+        "Time Granularity:",
+        ["Hourly (0-23)", "3 Intervals"],
+        key="allocation_granularity",
+        horizontal=True
+    )
+
+with col_config2:
+    total_fleet_size = st.number_input(
+        "Total Available Fleet:",
+        min_value=1,
+        value=int(total_avg_active_scooters),
+        step=10,
+        help="Total number of scooters you want to allocate"
+    )
+
+with col_config3:
+    confidence_threshold = st.slider(
+        "Confidence Threshold:",
+        min_value=50,
+        max_value=100,
+        value=70,
+        step=5,
+        help="Minimum fulfillment rate to consider neighborhood reliable (%)"
+    )
+
+st.markdown("---")
+
+# Select time period for allocation
+is_hourly_alloc = allocation_granularity == "Hourly (0-23)"
+alloc_agg_df = df_hourly_agg if is_hourly_alloc else df_interval_agg
+time_dim_alloc = "_hour" if is_hourly_alloc else "_time_interval"
+time_options = sorted(alloc_agg_df[time_dim_alloc].unique()) if is_hourly_alloc else INTERVAL_ORDER
+
+selected_time_period = st.selectbox(
+    f"Select {('Hour' if is_hourly_alloc else 'Interval')} for Allocation Analysis:",
+    options=time_options,
+    format_func=lambda x: f"Hour {x}:00" if is_hourly_alloc else x
+)
+
+# Filter data for selected time period
+period_data = alloc_agg_df[alloc_agg_df[time_dim_alloc] == selected_time_period].copy()
+
+if period_data.empty:
+    st.warning(f"No data available for {selected_time_period}")
+    st.stop()
+
+# ==============================
+# ALLOCATION ALGORITHM
+# ==============================
+
+# Step 1: Calculate demand metrics
+period_data["Demand_Score"] = period_data["Sessions"]  # Raw demand
+period_data["Missed_Rate"] = np.where(
+    period_data["Sessions"] > 0,
+    period_data["Missed Opportunity"] / period_data["Sessions"] * 100,
+    0
+)
+
+# Step 2: Calculate reliability score (historical performance)
+# Penalize neighborhoods with low fulfillment even if they look efficient
+period_data["Reliability_Score"] = np.where(
+    period_data["Neighborhood Fulfillment Rate"] >= (confidence_threshold/100),
+    period_data["Neighborhood Fulfillment Rate"] * 100,
+    period_data["Neighborhood Fulfillment Rate"] * 50  # Heavy penalty for unreliable neighborhoods
+)
+
+# Step 3: Calculate current efficiency (but don't over-weight it)
+period_data["Current_Efficiency"] = np.where(
+    period_data["Active (Avg)"] > 0,
+    period_data["Rides"] / period_data["Active (Avg)"],
+    0
+)
+
+# Step 4: Calculate unmet demand potential
+# This accounts for neighborhoods that might perform better with more scooters
+period_data["Unmet_Demand"] = period_data["Missed Opportunity"]
+period_data["Demand_Density"] = np.where(
+    period_data["Active (Avg)"] > 0,
+    period_data["Sessions"] / period_data["Active (Avg)"],
+    period_data["Sessions"]
+)
+
+# Step 5: Calculate elasticity indicator
+# High sessions + low vehicles + decent fulfillment = likely to benefit from more scooters
+# High sessions + low vehicles + poor fulfillment = risky (might have other issues)
+period_data["Growth_Potential"] = np.where(
+    (period_data["Demand_Density"] > period_data["Demand_Density"].median()) &
+    (period_data["Neighborhood Fulfillment Rate"] >= (confidence_threshold/100)),
+    period_data["Unmet_Demand"] * 1.5,  # Boost for high-demand reliable neighborhoods
+    period_data["Unmet_Demand"]
+)
+
+# Step 6: Composite Allocation Score
+# Weights: 40% demand, 25% reliability, 20% unmet demand, 15% growth potential
+period_data["Allocation_Score"] = (
+    (period_data["Demand_Score"] / period_data["Demand_Score"].max() * 40) +
+    (period_data["Reliability_Score"] / 100 * 25) +
+    (period_data["Unmet_Demand"] / period_data["Unmet_Demand"].max() * 20) +
+    (period_data["Growth_Potential"] / period_data["Growth_Potential"].max() * 15)
+)
+
+# Step 7: Allocate vehicles proportionally based on composite score
+total_score = period_data["Allocation_Score"].sum()
+period_data["Recommended_Vehicles"] = np.floor(
+    (period_data["Allocation_Score"] / total_score) * total_fleet_size
+).astype(int)
+
+# Step 8: Distribute remaining vehicles to highest-scoring neighborhoods
+remaining = total_fleet_size - period_data["Recommended_Vehicles"].sum()
+if remaining > 0:
+    top_indices = period_data.nlargest(remaining, "Allocation_Score").index
+    period_data.loc[top_indices, "Recommended_Vehicles"] += 1
+
+# Step 9: Calculate expected impact
+period_data["Current_Vehicles"] = period_data["Active (Avg)"]
+period_data["Vehicle_Change"] = period_data["Recommended_Vehicles"] - period_data["Current_Vehicles"]
+period_data["Expected_New_Rides"] = np.where(
+    period_data["Recommended_Vehicles"] > period_data["Current_Vehicles"],
+    (period_data["Vehicle_Change"] * period_data["Current_Efficiency"]).clip(
+        lower=0, 
+        upper=period_data["Missed Opportunity"]  # Can't exceed missed opportunity
+    ),
+    0
+)
+
+# Step 10: Flag risk categories
+def categorize_allocation_risk(row):
+    if row["Neighborhood Fulfillment Rate"] < (confidence_threshold/100):
+        return "⚠️ High Risk"
+    elif row["Current_Efficiency"] < 2:
+        return "🟡 Medium Risk"
+    else:
+        return "✅ Low Risk"
+
+period_data["Risk_Category"] = period_data.apply(categorize_allocation_risk, axis=1)
+
+# ==============================
+# DISPLAY ALLOCATION RESULTS
+# ==============================
+
+st.markdown(f"### 📊 Allocation Results for {selected_time_period}")
+
+# Summary metrics
+col1, col2, col3, col4 = st.columns(4)
+
+total_expected_new_rides = period_data["Expected_New_Rides"].sum()
+current_total_fulfillment = (period_data["Rides"].sum() / period_data["Sessions"].sum() * 100)
+projected_total_rides = period_data["Rides"].sum() + total_expected_new_rides
+projected_fulfillment = (projected_total_rides / period_data["Sessions"].sum() * 100)
+
+col1.metric(
+    "Current Fulfillment",
+    f"{current_total_fulfillment:.1f}%"
+)
+col2.metric(
+    "Projected Fulfillment",
+    f"{projected_fulfillment:.1f}%",
+    delta=f"+{projected_fulfillment - current_total_fulfillment:.1f}%"
+)
+col3.metric(
+    "Expected New Rides",
+    f"{int(total_expected_new_rides):,}",
+    delta=f"+{(total_expected_new_rides/period_data['Rides'].sum()*100):.1f}%"
+)
+col4.metric(
+    "Fleet Efficiency",
+    f"{(projected_total_rides / total_fleet_size):.2f}",
+    delta="rides/vehicle",
+    help="Projected rides per vehicle across entire fleet"
+)
+
+st.markdown("---")
+
+# Detailed allocation table
+st.markdown("#### 📋 Recommended Vehicle Allocation by Neighborhood")
+
+# Prepare display dataframe
+display_df = period_data[[
+    "Neighborhood", 
+    "Sessions",
+    "Rides",
+    "Missed Opportunity",
+    "Current_Vehicles",
+    "Recommended_Vehicles",
+    "Vehicle_Change",
+    "Expected_New_Rides",
+    "Neighborhood Fulfillment Rate",
+    "Allocation_Score",
+    "Risk_Category"
+]].copy()
+
+display_df = display_df.sort_values("Allocation_Score", ascending=False)
+display_df["Fulfillment_Rate_Pct"] = display_df["Neighborhood Fulfillment Rate"] * 100
+
+st.dataframe(
+    display_df,
+    use_container_width=True,
+    height=500,
+    column_config={
+        "Neighborhood": st.column_config.TextColumn("Neighborhood", width="medium"),
+        "Sessions": st.column_config.NumberColumn("Sessions", format="%d"),
+        "Rides": st.column_config.NumberColumn("Rides", format="%d"),
+        "Missed Opportunity": st.column_config.NumberColumn("Missed Opps", format="%d"),
+        "Current_Vehicles": st.column_config.NumberColumn("Current Fleet", format="%.1f"),
+        "Recommended_Vehicles": st.column_config.NumberColumn("Recommended", format="%d"),
+        "Vehicle_Change": st.column_config.NumberColumn(
+            "Change",
+            format="%+d",
+            help="Positive = add vehicles, Negative = remove vehicles"
+        ),
+        "Expected_New_Rides": st.column_config.NumberColumn("Expected +Rides", format="%d"),
+        "Fulfillment_Rate_Pct": st.column_config.NumberColumn("Fulfillment %", format="%.1f%%"),
+        "Allocation_Score": st.column_config.ProgressColumn(
+            "Priority Score",
+            format="%.1f",
+            min_value=0,
+            max_value=100,
+            help="Composite score: demand, reliability, unmet need, growth potential"
+        ),
+        "Risk_Category": st.column_config.TextColumn("Risk Level"),
+        "Neighborhood Fulfillment Rate": None  # Hide this column
+    },
+    hide_index=True,
+    column_order=[
+        "Neighborhood",
+        "Allocation_Score",
+        "Current_Vehicles",
+        "Recommended_Vehicles",
+        "Vehicle_Change",
+        "Expected_New_Rides",
+        "Sessions",
+        "Rides",
+        "Missed Opportunity",
+        "Fulfillment_Rate_Pct",
+        "Risk_Category"
+    ]
+)
+
+# Download allocation plan
+st.download_button(
+    label="📥 Download Allocation Plan (CSV)",
+    data=display_df.to_csv(index=False).encode('utf-8'),
+    file_name=f'allocation_plan_{selected_time_period}.csv',
+    mime='text/csv',
+    use_container_width=False
+)
+
+st.markdown("---")
+
+# Visualizations
+col_viz1, col_viz2 = st.columns(2)
+
+with col_viz1:
+    st.markdown("#### 📊 Vehicle Reallocation Changes")
+    
+    # Create change visualization
+    change_data = display_df[display_df["Vehicle_Change"] != 0].copy()
+    change_data["Change_Type"] = change_data["Vehicle_Change"].apply(
+        lambda x: "Increase" if x > 0 else "Decrease"
+    )
+    
+    if not change_data.empty:
+        change_chart = alt.Chart(change_data).mark_bar().encode(
+            x=alt.X("Vehicle_Change:Q", title="Vehicle Change"),
+            y=alt.Y("Neighborhood:N", sort="-x", title=""),
+            color=alt.Color(
+                "Change_Type:N",
+                scale=alt.Scale(domain=["Increase", "Decrease"], range=["#00D9FF", "#FF6B9D"]),
+                legend=None
+            ),
+            tooltip=[
+                alt.Tooltip("Neighborhood:N"),
+                alt.Tooltip("Vehicle_Change:Q", title="Change"),
+                alt.Tooltip("Current_Vehicles:Q", format=".1f", title="Current"),
+                alt.Tooltip("Recommended_Vehicles:Q", title="Recommended")
+            ]
+        ).properties(height=400).configure(background='#0e1117').configure_axis(
+            labelColor='white',
+            titleColor='white',
+            gridColor='rgba(128, 128, 128, 0.2)'
+        )
+        
+        st.altair_chart(change_chart, use_container_width=True)
+    else:
+        st.info("No changes recommended - current allocation is optimal")
+
+with col_viz2:
+    st.markdown("#### 🎯 Allocation Score vs Expected Impact")
+    
+    scatter_chart = alt.Chart(display_df).mark_circle(size=200, opacity=0.8).encode(
+        x=alt.X("Allocation_Score:Q", title="Allocation Score", scale=alt.Scale(domain=[0, 100])),
+        y=alt.Y("Expected_New_Rides:Q", title="Expected New Rides"),
+        color=alt.Color(
+            "Risk_Category:N",
+            scale=alt.Scale(
+                domain=["✅ Low Risk", "🟡 Medium Risk", "⚠️ High Risk"],
+                range=["#00FF00", "#FFA500", "#FF0000"]
+            ),
+            legend=alt.Legend(title="Risk Level", titleColor='white', labelColor='white')
+        ),
+        size=alt.Size("Sessions:Q", scale=alt.Scale(range=[100, 1000]), legend=None),
+        tooltip=[
+            alt.Tooltip("Neighborhood:N"),
+            alt.Tooltip("Allocation_Score:Q", format=".1f", title="Score"),
+            alt.Tooltip("Expected_New_Rides:Q", title="Expected Rides"),
+            alt.Tooltip("Sessions:Q", title="Total Sessions"),
+            alt.Tooltip("Risk_Category:N", title="Risk")
+        ]
+    ).properties(height=400).configure(background='#0e1117').configure_axis(
+        labelColor='white',
+        titleColor='white',
+        gridColor='rgba(128, 128, 128, 0.2)'
+    )
+    
+    st.altair_chart(scatter_chart, use_container_width=True)
+
+st.markdown("---")
+
+# Action items and insights
+st.markdown("#### 🎯 Key Actions Based on Allocation Model")
+
+col_action1, col_action2 = st.columns(2)
+
+with col_action1:
+    st.markdown("**🚀 High Priority Actions:**")
+    
+    high_priority = display_df[
+        (display_df["Vehicle_Change"] > 0) & 
+        (display_df["Risk_Category"] == "✅ Low Risk")
+    ].nlargest(3, "Allocation_Score")
+    
+    if not high_priority.empty:
+        for _, row in high_priority.iterrows():
+            st.success(
+                f"**{row['Neighborhood']}**: Add {int(row['Vehicle_Change'])} vehicles "
+                f"(Expected +{int(row['Expected_New_Rides'])} rides, Score: {row['Allocation_Score']:.1f})"
+            )
+    else:
+        st.info("No high-confidence expansion opportunities identified")
+
+with col_action2:
+    st.markdown("**⚠️ Caution Areas:**")
+    
+    caution_areas = display_df[
+        (display_df["Risk_Category"].isin(["⚠️ High Risk", "🟡 Medium Risk"])) &
+        (display_df["Vehicle_Change"] > 0)
+    ].nlargest(3, "Vehicle_Change")
+    
+    if not caution_areas.empty:
+        for _, row in caution_areas.iterrows():
+            st.warning(
+                f"**{row['Neighborhood']}**: Model suggests +{int(row['Vehicle_Change'])} vehicles "
+                f"but {row['Risk_Category']} (Fulfillment: {row['Fulfillment_Rate_Pct']:.1f}%)"
+            )
+        st.caption("💡 Investigate why these neighborhoods underperform before adding vehicles")
+    else:
+        st.success("All recommendations are low-risk!")
+
+# Methodology explanation
+with st.expander("🔍 How the Allocation Model Works"):
+    st.markdown("""
+    ### Allocation Algorithm Methodology
+    
+    The model uses a **multi-factor scoring system** to recommend optimal vehicle distribution:
+    
+    #### Scoring Components (Total: 100 points)
+    
+    1. **Demand Score (40 points)**
+       - Raw session volume
+       - Higher demand = higher priority
+    
+    2. **Reliability Score (25 points)**
+       - Historical fulfillment rate
+       - Neighborhoods below confidence threshold get 50% penalty
+       - **Prevents over-allocating to unreliable areas**
+    
+    3. **Unmet Demand (20 points)**
+       - Total missed opportunities
+       - Actual unfulfilled demand
+    
+    4. **Growth Potential (15 points)**
+       - Demand density + reliability
+       - High sessions per vehicle + decent fulfillment = likely to benefit from more scooters
+       - **Identifies neighborhoods that will actually use additional vehicles**
+    
+    #### Risk Categories
+    
+    - **✅ Low Risk**: Fulfillment ≥ {confidence_threshold}% and efficiency ≥ 2 rides/vehicle
+    - **🟡 Medium Risk**: Low efficiency but acceptable fulfillment
+    - **⚠️ High Risk**: Fulfillment < {confidence_threshold}% (investigate before adding vehicles)
+    
+    #### Why This Prevents False Positives
+    
+    A neighborhood might look great with:
+    - Few vehicles (say 3)
+    - High utilization (9 rides/vehicle)
+    - Good RPDPV
+    
+    **BUT** if they only have 50% fulfillment, the model recognizes this is **unreliable performance**.
+    
+    The algorithm will either:
+    - Give them fewer additional vehicles than pure demand would suggest
+    - Flag them as high-risk for investigation
+    
+    This prevents wasting vehicles in areas with underlying issues (poor placement, low awareness, infrastructure problems, etc.)
+    """)
+
+st.markdown("---")
+
+# Time-based allocation comparison
+st.markdown("#### ⏰ Allocation Needs Across Time Periods")
+st.caption("Compare how vehicle needs shift throughout the day")
+
+# Calculate allocation for all time periods
+all_time_allocations = []
+
+for time_val in time_options:
+    period_subset = alloc_agg_df[alloc_agg_df[time_dim_alloc] == time_val].copy()
+    
+    if not period_subset.empty:
+        period_subset["Demand_Score"] = period_subset["Sessions"]
+        period_subset["Reliability_Score"] = np.where(
+            period_subset["Neighborhood Fulfillment Rate"] >= (confidence_threshold/100),
+            period_subset["Neighborhood Fulfillment Rate"] * 100,
+            period_subset["Neighborhood Fulfillment Rate"] * 50
+        )
+        period_subset["Unmet_Demand"] = period_subset["Missed Opportunity"]
+        period_subset["Demand_Density"] = np.where(
+            period_subset["Active (Avg)"] > 0,
+            period_subset["Sessions"] / period_subset["Active (Avg)"],
+            period_subset["Sessions"]
+        )
+        period_subset["Growth_Potential"] = np.where(
+            (period_subset["Demand_Density"] > period_subset["Demand_Density"].median()) &
+            (period_subset["Neighborhood Fulfillment Rate"] >= (confidence_threshold/100)),
+            period_subset["Unmet_Demand"] * 1.5,
+            period_subset["Unmet_Demand"]
+        )
+        period_subset["Allocation_Score"] = (
+            (period_subset["Demand_Score"] / period_subset["Demand_Score"].max() * 40) +
+            (period_subset["Reliability_Score"] / 100 * 25) +
+            (period_subset["Unmet_Demand"] / period_subset["Unmet_Demand"].max() * 20) +
+            (period_subset["Growth_Potential"] / period_subset["Growth_Potential"].max() * 15)
+        )
+        
+        total_score = period_subset["Allocation_Score"].sum()
+        period_subset["Recommended_Vehicles"] = np.floor(
+            (period_subset["Allocation_Score"] / total_score) * total_fleet_size
+        ).astype(int)
+        
+        period_subset["Time_Period"] = time_val
+        all_time_allocations.append(period_subset[["Neighborhood", "Time_Period", "Recommended_Vehicles"]])
+
+if all_time_allocations:
+    all_time_df = pd.concat(all_time_allocations, ignore_index=True)
+    
+    # Create heatmap of recommendations across time
+    heatmap_chart = alt.Chart(all_time_df).mark_rect(stroke='#1a1a1a', strokeWidth=2).encode(
+        x=alt.X(
+            "Time_Period:O",
+            title="Time Period",
+            sort=time_options,
+            axis=alt.Axis(labelAngle=-45, labelFontSize=12, labelColor='white', titleColor='white')
+        ),
+        y=alt.Y(
+            "Neighborhood:O",
+            title="Neighborhood",
+            axis=alt.Axis(labelFontSize=12, labelColor='white', titleColor='white')
+        ),
+        color=alt.Color(
+            "Recommended_Vehicles:Q",
+            scale=alt.Scale(scheme="blues"),
+            legend=alt.Legend(
+                title="Recommended Vehicles",
+                titleColor='white',
+                labelColor='white'
+            )
+        ),
+        tooltip=[
+            alt.Tooltip("Neighborhood:N"),
+            alt.Tooltip("Time_Period:O", title="Time"),
+            alt.Tooltip("Recommended_Vehicles:Q", title="Recommended Vehicles")
+        ]
+    ).properties(
+        height=max(400, len(all_time_df["Neighborhood"].unique()) * 25)
+    ).configure(
+        background='#0e1117'
+    ).configure_view(
+        strokeWidth=0
+    )
+    
+    st.altair_chart(heatmap_chart, use_container_width=True)
+    st.caption("💡 Darker blue = more vehicles needed. Use this to plan rebalancing throughout the day.")
