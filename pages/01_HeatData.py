@@ -683,29 +683,59 @@ with col_i:
     st.info("📊 Compare fulfillment patterns. Look for consistent performers vs volatility.")
 
 trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
-    point=alt.OverlayMarkDef(size=60, filled=True),
-    strokeWidth=3
+    point=alt.OverlayMarkDef(size=100, filled=True, opacity=1),
+    strokeWidth=4,
+    opacity=0.9
 ).encode(
     x=alt.X(
         f"{agg_config_4['time_dim']}:O",
         title=agg_config_4['time_title'],
         sort=agg_config_4['time_sort'],
-        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
+        axis=alt.Axis(
+            labelAngle=-45, 
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white',
+            gridColor='rgba(128, 128, 128, 0.2)'
+        )
     ),
     y=alt.Y(
         "Neighborhood Fulfillment Rate:Q",
         title="Fulfillment Rate",
-        axis=alt.Axis(format=".0%", labelFontSize=12),
+        axis=alt.Axis(
+            format=".0%", 
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white',
+            gridColor='rgba(128, 128, 128, 0.2)'
+        ),
         scale=alt.Scale(domain=[0, 1])
     ),
-    color=alt.Color("Neighborhood:N", legend=alt.Legend(titleFontSize=12)),
+    color=alt.Color(
+        "Neighborhood:N", 
+        scale=alt.Scale(scheme='tableau20'),
+        legend=alt.Legend(
+            titleFontSize=13,
+            labelFontSize=12,
+            titleColor='white',
+            labelColor='white',
+            symbolSize=200,
+            symbolStrokeWidth=3
+        )
+    ),
     tooltip=[
         alt.Tooltip("Neighborhood:N", title="Neighborhood"),
         alt.Tooltip(f"{agg_config_4['time_dim']}:O", title=agg_config_4['time_title']),
         alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="✅ Fulfillment"),
         alt.Tooltip("Rides:Q", format=",", title="🚴 Rides"),
     ]
-).properties(height=500).configure_view(strokeWidth=0)
+).properties(height=500).configure_view(
+    strokeWidth=0
+).configure(
+    background='#0e1117'
+)
 
 st.altair_chart(trend_chart, use_container_width=True)
 st.markdown("---")
@@ -742,23 +772,56 @@ dynamic_long = dynamic_total.melt(
 )
 
 demand_chart = alt.Chart(dynamic_long).mark_line(
-    point=True, 
-    strokeWidth=3,
-    interpolate='monotone'
+    point=alt.OverlayMarkDef(size=100, filled=True, opacity=1),
+    strokeWidth=4,
+    interpolate='monotone',
+    opacity=0.9
 ).encode(
     x=alt.X(
         f"{agg_config_5['time_dim']}:O",
         title=agg_config_5['time_title'],
         sort=agg_config_5['time_sort'],
-        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
+        axis=alt.Axis(
+            labelAngle=-45, 
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white',
+            gridColor='rgba(128, 128, 128, 0.2)'
+        )
     ),
-    y=alt.Y("Count:Q", title="Total Count", axis=alt.Axis(labelFontSize=12)),
-    color=alt.Color("Metric:N", legend=alt.Legend(titleFontSize=12)),
+    y=alt.Y(
+        "Count:Q", 
+        title="Total Count", 
+        axis=alt.Axis(
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white',
+            gridColor='rgba(128, 128, 128, 0.2)'
+        )
+    ),
+    color=alt.Color(
+        "Metric:N", 
+        scale=alt.Scale(scheme='set2'),
+        legend=alt.Legend(
+            titleFontSize=13,
+            labelFontSize=12,
+            titleColor='white',
+            labelColor='white',
+            symbolSize=200,
+            symbolStrokeWidth=3
+        )
+    ),
     tooltip=[
         alt.Tooltip(agg_config_5["time_dim"], title=agg_config_5['time_title']),
         alt.Tooltip("Metric:N", title="Metric"),
         alt.Tooltip("Count:Q", format=",.1f", title="Count")
     ]
-).properties(height=450).configure_view(strokeWidth=0)
+).properties(height=450).configure_view(
+    strokeWidth=0
+).configure(
+    background='#0e1117'
+)
 
 st.altair_chart(demand_chart, use_container_width=True)
