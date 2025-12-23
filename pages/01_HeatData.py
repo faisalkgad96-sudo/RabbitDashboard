@@ -577,29 +577,44 @@ agg_config_2 = get_aggregation_for_granularity(
 with col_i:
     st.info("📊 Lighter colors = higher fulfillment. Identify peak performance periods.")
 
-fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect(strokeWidth=1, stroke='white').encode(
+fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect(strokeWidth=2, stroke='#1a1a1a').encode(
     x=alt.X(
         f"{agg_config_2['time_dim']}:O", 
         title=agg_config_2['time_title'], 
         sort=agg_config_2['time_sort'],
-        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
+        axis=alt.Axis(
+            labelAngle=-45, 
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white'
+        )
     ),
     y=alt.Y(
         "Neighborhood:O", 
         title="Neighborhood",
-        axis=alt.Axis(labelFontSize=12)
+        axis=alt.Axis(
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white'
+        )
     ),
     color=alt.Color(
         "Neighborhood Fulfillment Rate:Q",
         scale=alt.Scale(
-            domain=[0, 1],
-            range=['#8B0000', '#FFD700', '#90EE90'],
+            domain=[0, 0.5, 1],
+            range=['#8B0000', '#FF8C00', '#00FF00'],
         ),
         legend=alt.Legend(
             title="Fulfillment Rate",
             format=".0%",
             orient="right",
-            titleFontSize=12
+            titleFontSize=13,
+            labelFontSize=12,
+            titleColor='white',
+            labelColor='white',
+            gradientLength=300
         )
     ),
     tooltip=[
@@ -613,7 +628,11 @@ fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect(strokeWidth=1, strok
     ]
 ).properties(
     height=max(MIN_CHART_HEIGHT, len(agg_config_2["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD)
-).configure_view(strokeWidth=0)
+).configure_view(
+    strokeWidth=0
+).configure(
+    background='#0e1117'
+)
 
 st.altair_chart(fulfillment_chart, use_container_width=True)
 st.markdown("---")
@@ -636,18 +655,45 @@ agg_config_3 = get_aggregation_for_granularity(
 with col_i:
     st.info("📊 Darker red = more missed opportunities. Priority areas for improvement.")
 
-missed_chart = alt.Chart(agg_config_3["df"]).mark_rect(strokeWidth=1, stroke='white').encode(
+missed_chart = alt.Chart(agg_config_3["df"]).mark_rect(strokeWidth=2, stroke='#1a1a1a').encode(
     x=alt.X(
         f"{agg_config_3['time_dim']}:O",
         title=agg_config_3['time_title'],
         sort=agg_config_3['time_sort'],
-        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
+        axis=alt.Axis(
+            labelAngle=-45, 
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white'
+        )
     ),
-    y=alt.Y("Neighborhood:O", title="Neighborhood", axis=alt.Axis(labelFontSize=12)),
+    y=alt.Y(
+        "Neighborhood:O", 
+        title="Neighborhood", 
+        axis=alt.Axis(
+            labelFontSize=13,
+            titleFontSize=14,
+            labelColor='white',
+            titleColor='white'
+        )
+    ),
     color=alt.Color(
         "Missed Opportunity:Q",
-        scale=alt.Scale(scheme="reds", domainMin=0),
-        legend=alt.Legend(title="Missed Opps", orient="right", titleFontSize=12)
+        scale=alt.Scale(
+            scheme="reds", 
+            domainMin=0,
+            reverse=False
+        ),
+        legend=alt.Legend(
+            title="Missed Opps", 
+            orient="right", 
+            titleFontSize=13,
+            labelFontSize=12,
+            titleColor='white',
+            labelColor='white',
+            gradientLength=300
+        )
     ),
     tooltip=[
         alt.Tooltip("Neighborhood:N", title="Neighborhood"),
@@ -659,7 +705,11 @@ missed_chart = alt.Chart(agg_config_3["df"]).mark_rect(strokeWidth=1, stroke='wh
     ]
 ).properties(
     height=max(MIN_CHART_HEIGHT, len(agg_config_3["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD)
-).configure_view(strokeWidth=0)
+).configure_view(
+    strokeWidth=0
+).configure(
+    background='#0e1117'
+)
 
 st.altair_chart(missed_chart, use_container_width=True)
 st.markdown("---")
@@ -682,10 +732,13 @@ agg_config_4 = get_aggregation_for_granularity(
 with col_i:
     st.info("📊 Compare fulfillment patterns. Look for consistent performers vs volatility.")
 
+# Create selection for interactivity
+selection = alt.selection_point(fields=['Neighborhood'], bind='legend', on='click')
+
 trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
-    point=alt.OverlayMarkDef(size=100, filled=True, opacity=1),
-    strokeWidth=4,
-    opacity=0.9
+    point=alt.OverlayMarkDef(size=120, filled=True, opacity=1),
+    strokeWidth=5,
+    opacity=1
 ).encode(
     x=alt.X(
         f"{agg_config_4['time_dim']}:O",
@@ -697,7 +750,8 @@ trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
             titleFontSize=14,
             labelColor='white',
             titleColor='white',
-            gridColor='rgba(128, 128, 128, 0.2)'
+            gridColor='rgba(128, 128, 128, 0.3)',
+            grid=True
         )
     ),
     y=alt.Y(
@@ -709,33 +763,42 @@ trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
             titleFontSize=14,
             labelColor='white',
             titleColor='white',
-            gridColor='rgba(128, 128, 128, 0.2)'
+            gridColor='rgba(128, 128, 128, 0.3)',
+            grid=True
         ),
         scale=alt.Scale(domain=[0, 1])
     ),
     color=alt.Color(
         "Neighborhood:N", 
-        scale=alt.Scale(scheme='tableau20'),
+        scale=alt.Scale(scheme='category20'),
         legend=alt.Legend(
             titleFontSize=13,
             labelFontSize=12,
             titleColor='white',
             labelColor='white',
-            symbolSize=200,
-            symbolStrokeWidth=3
+            symbolSize=250,
+            symbolStrokeWidth=4,
+            title="Neighborhood (Click to filter)"
         )
     ),
+    opacity=alt.condition(selection, alt.value(1), alt.value(0.15)),
+    strokeWidth=alt.condition(selection, alt.value(5), alt.value(2)),
     tooltip=[
         alt.Tooltip("Neighborhood:N", title="Neighborhood"),
         alt.Tooltip(f"{agg_config_4['time_dim']}:O", title=agg_config_4['time_title']),
         alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="✅ Fulfillment"),
         alt.Tooltip("Rides:Q", format=",", title="🚴 Rides"),
+        alt.Tooltip("Sessions:Q", format=",", title="📱 Sessions"),
     ]
-).properties(height=500).configure_view(
+).add_params(
+    selection
+).properties(height=550).configure_view(
     strokeWidth=0
 ).configure(
     background='#0e1117'
 )
+
+st.caption("💡 **Tip:** Click on neighborhood names in the legend to highlight specific lines")
 
 st.altair_chart(trend_chart, use_container_width=True)
 st.markdown("---")
