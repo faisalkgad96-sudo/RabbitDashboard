@@ -10,18 +10,16 @@ import datetime
 # ==============================
 # CONSTANTS
 # ==============================
-MIN_CHART_HEIGHT = 400
-PIXELS_PER_NEIGHBORHOOD = 30
+MIN_CHART_HEIGHT = 500
+PIXELS_PER_NEIGHBORHOOD = 40
 MAX_DATE_RANGE_DAYS = 365
 
-# Time interval definitions
 TIME_INTERVALS = {
     "Morning Peak (6a-12p)": (6, 11),
     "Afternoon Peak (12p-6p)": (12, 17),
-    "Evening/Night (6p-6a)": (18, 5)  # Wraps around midnight
+    "Evening/Night (6p-6a)": (18, 5)
 }
 INTERVAL_ORDER = ["Morning Peak (6a-12p)", "Afternoon Peak (12p-6p)", "Evening/Night (6p-6a)"]
-
 GRANULARITY_OPTIONS = ["Hourly (0-23)", "3 Intervals"]
 
 # ==============================
@@ -38,25 +36,57 @@ st.set_page_config(
 # ==============================
 st.markdown("""
 <style>
-    /* Use theme-aware styling instead of hardcoded colors */
     [data-testid="stMetricValue"] {
-        font-size: 1.8rem;
+        font-size: 2.2rem;
+        font-weight: 600;
     }
     
-    /* Reduce padding in columns for tighter layout */
+    [data-testid="stMetricLabel"] {
+        font-size: 1rem;
+        font-weight: 500;
+    }
+    
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    h2 {
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid rgba(128, 128, 128, 0.2);
+    }
+    
+    h3 {
+        margin-top: 1.5rem;
+        margin-bottom: 0.8rem;
+    }
+    
+    hr {
+        margin-top: 2rem;
+        margin-bottom: 2rem;
+        border: none;
+        height: 2px;
+        background: linear-gradient(to right, transparent, rgba(128, 128, 128, 0.3), transparent);
+    }
+    
     .stRadio > label {
         padding-right: 15px;
         margin-right: 0px; 
     }
     
-    /* Ensure metrics inherit theme background */
     [data-testid="stMetric"] {
-        background-color: transparent;
+        background-color: rgba(128, 128, 128, 0.05);
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid rgba(128, 128, 128, 0.1);
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Fulfillment Dashboard")
+st.title("📊 Neighborhood Fulfillment Dashboard")
+st.markdown("### Real-time insights into fulfillment performance and vehicle utilization")
 
 # ==============================
 # HELPER FUNCTIONS
@@ -124,7 +154,6 @@ def process_data(df):
     df_copy = df.copy()
     df_copy.columns = df_copy.columns.str.strip()
     
-    # Required columns check
     required_cols = [
         "Area", "Neighborhood", "Start Date - Local",
         "Sessions", "Rides", "Active Vehicles", "Urgent Vehicles"
@@ -136,13 +165,11 @@ def process_data(df):
         st.info(f"Available columns: {list(df_copy.columns)}")
         return None
 
-    # Date processing
     df_copy["Start Date - Local"] = pd.to_datetime(
         df_copy["Start Date - Local"], 
         errors="coerce"
     )
     
-    # Check for failed date parsing
     if df_copy["Start Date - Local"].isna().all():
         st.error("❌ Failed to parse dates. Please check date format.")
         return None
@@ -170,7 +197,6 @@ def calculate_metrics(df_grouped, time_column):
         .reset_index()
     )
 
-    # Calculate derived metrics
     agg_df["Neighborhood Fulfillment Rate"] = np.where(
         agg_df["Sessions"] > 0,
         agg_df["Rides"] / agg_df["Sessions"],
@@ -212,7 +238,7 @@ def validate_date_range(start_date, end_date):
 def add_granularity_control(chart_num, default_index=0):
     """Creates a consistent granularity radio button control."""
     return st.radio(
-        f"Chart {chart_num} Granularity",
+        "View by:",
         GRANULARITY_OPTIONS,
         key=f"granularity_{chart_num}",
         index=default_index,
@@ -232,38 +258,43 @@ def get_aggregation_for_granularity(granularity, df_hourly, df_interval):
 
 
 # ==============================
-# SESSION STATE INITIALIZATION
+# SESSION STATE
 # ==============================
 if "data" not in st.session_state:
     st.session_state.data = None
 
-# Default dates
 today = datetime.date.today()
 week_ago = today - datetime.timedelta(days=7)
 
 # ==============================
-# SIDEBAR: DATA SOURCE
+# SIDEBAR
 # ==============================
 with st.sidebar:
-    st.header("Data Source")
-    source_type = st.radio("Choose Source:", ["🔌 Live API", "📂 File Upload"])
+    st.header("⚙️ Data Configuration")
     
-    # Check for API token in secrets
+    source_type = st.radio(
+        "Data Source:", 
+        ["🔌 Live API", "📂 File Upload"],
+        label_visibility="visible"
+    )
+    
     api_token = st.secrets.get("RABBIT_TOKEN") if hasattr(st, 'secrets') else None
 
     if source_type == "🔌 Live API":
-        # Date inputs
+        st.subheader("Date Range")
         start_d = st.date_input("Start Date", value=week_ago, key="start_d")
         end_d = st.date_input("End Date", value=today, key="end_d")
         
-        # Validate date range
         is_valid, error_msg = validate_date_range(start_d, end_d)
         if not is_valid:
             st.error(error_msg)
         
+        st.divider()
+        
         if api_token is None:
-            st.caption("Token not found in `secrets.toml`. Please enter manually.")
-            st.warning("⚠️ Never share screenshots containing your API token!")
+            st.warning("⚠️ API Token Required")
+            st.caption("Token not found in secrets. Enter manually below:")
+            st.info("💡 Never share screenshots with your API token visible!")
             api_token = st.text_input(
                 "API Token", 
                 value="", 
@@ -272,10 +303,10 @@ with st.sidebar:
             )
             button_disabled = not api_token or not is_valid
         else:
-            st.caption("✅ Using token from `secrets.toml`")
+            st.success("✅ Using secured token")
             button_disabled = not is_valid
         
-        if st.button("Fetch Live Data", type="primary", disabled=button_disabled):
+        if st.button("🚀 Fetch Data", type="primary", disabled=button_disabled, use_container_width=True):
             with st.spinner("Fetching and processing data..."):
                 raw_df = fetch_heat_data(
                     api_token, 
@@ -292,9 +323,10 @@ with st.sidebar:
                     else:
                         st.warning("Data fetched but is empty.")
 
-    else:  # File Upload
+    else:
+        st.subheader("File Upload")
         uploaded_file = st.file_uploader(
-            "Upload Excel/CSV", 
+            "Choose Excel or CSV file:", 
             type=["xlsx", "xls", "csv"]
         )
         if uploaded_file:
@@ -307,16 +339,18 @@ with st.sidebar:
                 processed = process_data(raw_df)
                 if processed is not None:
                     st.session_state.data = processed
-                    st.success(f"✅ Loaded {len(raw_df):,} rows from file!")
+                    st.success(f"✅ Loaded {len(raw_df):,} rows!")
                     st.rerun()
                 
             except Exception as e:
                 st.error(f"❌ Error reading file: {e}")
     
-    # Clear data button
-    st.divider()
     if st.session_state.data is not None:
-        if st.button("🗑️ Clear Data", type="secondary"):
+        st.divider()
+        st.subheader("Data Info")
+        st.metric("Total Records", f"{len(st.session_state.data):,}")
+        
+        if st.button("🗑️ Clear Data", type="secondary", use_container_width=True):
             st.session_state.data = None
             st.rerun()
 
@@ -325,7 +359,18 @@ with st.sidebar:
 # ==============================
 
 if st.session_state.data is None:
-    st.info("👈 Please fetch data via API or upload a file from the sidebar.")
+    st.info("👈 **Get Started:** Configure your data source in the sidebar")
+    st.markdown("""
+    ### Welcome to the Fulfillment Dashboard
+    
+    This dashboard provides comprehensive insights into:
+    - 🎯 Neighborhood performance metrics
+    - 📊 Fulfillment rates and trends
+    - 🚲 Vehicle utilization patterns
+    - 💔 Missed opportunity analysis
+    
+    **To begin:** Select a data source from the sidebar (API or file upload)
+    """)
     st.stop()
 
 df = st.session_state.data
@@ -333,27 +378,31 @@ df = st.session_state.data
 # ==============================
 # FILTERS
 # ==============================
-st.divider()
-c1, c2, c3 = st.columns([1, 2, 1])
+st.markdown("---")
+st.markdown("## 🔍 Filters")
+
+col1, col2, col3 = st.columns([2, 3, 2])
 
 areas = sorted(df["Area"].dropna().unique().tolist())
 dates = sorted(df["_date"].dropna().unique().tolist())
 
-with c1:
+with col1:
     selected_area = st.selectbox(
-        "📍 Select Area", 
+        "📍 Area", 
         areas, 
         index=0 if areas else 0
     )
 
-with c2:
+with col2:
     selected_dates = st.multiselect(
-        "📅 Select Dates", 
+        "📅 Date(s)", 
         dates, 
-        default=dates[:1]  # Simplified default selection
+        default=dates[:1]
     )
 
-# Apply Filters
+with col3:
+    st.markdown("##### Quick Actions")
+
 df_filtered = df[
     (df["Area"] == selected_area) & 
     (df["_date"].isin(selected_dates)) &
@@ -361,23 +410,21 @@ df_filtered = df[
 ]
 
 if df_filtered.empty:
-    st.warning("⚠️ No data available for the selected filters.")
+    st.warning("⚠️ No data available for selected filters. Try different criteria.")
     st.stop()
 
 # ==============================
-# DATA PREPARATION (GLOBAL)
+# DATA PREPARATION
 # ==============================
 df_hourly_agg = calculate_metrics(df_filtered, "_hour")
 df_interval_agg = calculate_metrics(df_filtered, "_time_interval")
 
-# Apply categorical ordering to intervals
 df_interval_agg["_time_interval"] = pd.Categorical(
     df_interval_agg["_time_interval"], 
     categories=INTERVAL_ORDER, 
     ordered=True
 )
 
-# Scorecard metrics (period-level)
 daily_active_avg = (
     df_filtered.groupby(["Neighborhood", "_date"])["Active Vehicles"]
     .mean()
@@ -392,50 +439,75 @@ period_active_avg = (
 )
 total_avg_active_scooters = period_active_avg["Active (Avg)"].sum()
 
-# ==============================
-# DOWNLOAD SECTION
-# ==============================
-with st.expander("📥 Download Data"):
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            label="Download Hourly Data (CSV)",
-            data=df_hourly_agg.to_csv(index=False).encode('utf-8'),
-            file_name=f'hourly_data_{selected_area}_{len(selected_dates)}days.csv',
-            mime='text/csv',
-        )
-    with col2:
-        st.download_button(
-            label="Download Interval Data (CSV)",
-            data=df_interval_agg.to_csv(index=False).encode('utf-8'),
-            file_name=f'interval_data_{selected_area}_{len(selected_dates)}days.csv',
-            mime='text/csv',
-        )
+# Download buttons
+if selected_dates:
+    with col3:
+        with st.expander("📥 Download Data"):
+            st.download_button(
+                label="📊 Hourly Data",
+                data=df_hourly_agg.to_csv(index=False).encode('utf-8'),
+                file_name=f'hourly_{selected_area}.csv',
+                mime='text/csv',
+                use_container_width=True
+            )
+            st.download_button(
+                label="⏰ Interval Data",
+                data=df_interval_agg.to_csv(index=False).encode('utf-8'),
+                file_name=f'interval_{selected_area}.csv',
+                mime='text/csv',
+                use_container_width=True
+            )
 
 st.markdown("---")
 
 # ==============================
-# TOP LEVEL METRICS
+# KEY METRICS
 # ==============================
+st.markdown("## 📈 Performance Overview")
+
 total_rides = df_filtered["Rides"].sum()
 total_sessions = df_filtered["Sessions"].sum()
 unique_neighborhoods = df_filtered["Neighborhood"].nunique()
 total_missed_opportunity = total_sessions - total_rides
+overall_fulfillment = (total_rides / total_sessions * 100) if total_sessions > 0 else 0
 
 m1, m2, m3, m4, m5 = st.columns(5)
 
-m1.metric("Total Rides", f"{total_rides:,}")
-m2.metric("Total Sessions", f"{total_sessions:,}")
-m3.metric("Avg Active Scooters", f"{total_avg_active_scooters:,.1f}")
-m4.metric("Total Missed Opp.", f"{total_missed_opportunity:,}")
-m5.metric("Active Neighborhoods", unique_neighborhoods)
+m1.metric(
+    "🚴 Total Rides", 
+    f"{total_rides:,}",
+    help="Total completed rides"
+)
+m2.metric(
+    "📱 Total Sessions", 
+    f"{total_sessions:,}",
+    help="Total ride requests"
+)
+m3.metric(
+    "🎯 Fulfillment Rate",
+    f"{overall_fulfillment:.1f}%",
+    help="Percentage converted to rides"
+)
+m4.metric(
+    "💔 Missed Opps", 
+    f"{total_missed_opportunity:,}",
+    help="Sessions not converted",
+    delta=f"-{(total_missed_opportunity/total_sessions*100):.1f}%" if total_sessions > 0 else None,
+    delta_color="inverse"
+)
+m5.metric(
+    "🏘️ Active Areas", 
+    unique_neighborhoods,
+    help="Neighborhoods with activity"
+)
 
 st.markdown("---")
 
 # ==============================
-# 1. NEIGHBORHOOD LEADERBOARD
+# 1. LEADERBOARD
 # ==============================
-st.subheader("📊 Neighborhood Leaderboard")
+st.markdown("## 🏆 Neighborhood Performance Leaderboard")
+st.caption("Rankings based on Rides Per Day Per Vehicle (RPDPV)")
 
 period_summary = df_filtered.groupby("Neighborhood").agg(
     Rides=("Rides", "sum"),
@@ -451,35 +523,49 @@ agg["RPDPV"] = np.where(
     0
 )
 agg["Missed Opportunity"] = agg["Sessions"] - agg["Rides"]
+agg["Fulfillment Rate"] = np.where(
+    agg["Sessions"] > 0,
+    agg["Rides"] / agg["Sessions"] * 100,
+    0
+)
 
 st.dataframe(
     agg.sort_values("RPDPV", ascending=False),
     use_container_width=True,
+    height=400,
     column_config={
+        "Neighborhood": st.column_config.TextColumn("Neighborhood", width="medium"),
+        "Rides": st.column_config.NumberColumn("Total Rides", format="%d"),
+        "Sessions": st.column_config.NumberColumn("Total Sessions", format="%d"),
+        "Fulfillment Rate": st.column_config.NumberColumn("Fulfillment %", format="%.1f%%"),
+        "Missed Opportunity": st.column_config.NumberColumn("Missed Opps", format="%d"),
+        "Rides per Day": st.column_config.NumberColumn("Rides/Day", format="%.1f"),
+        "Active (Avg)": st.column_config.NumberColumn("Avg Vehicles", format="%.1f"),
         "RPDPV": st.column_config.ProgressColumn(
-            "Rides/Day/Vehicle",
-            help="Rides per Day per Average Active Vehicle",
+            "⭐ RPDPV",
+            help="Efficiency score",
             format="%.2f",
             min_value=0,
             max_value=agg["RPDPV"].max(),
+            width="large"
         ),
-        "Active (Avg)": st.column_config.NumberColumn(format="%.1f"),
-        "Missed Opportunity": st.column_config.NumberColumn(format="%d")
     },
     hide_index=True,
     column_order=[
-        "Neighborhood", "Rides", "Sessions", "Missed Opportunity", 
-        "Rides per Day", "Active (Avg)", "RPDPV"
+        "Neighborhood", "RPDPV", "Fulfillment Rate", "Rides", "Sessions", 
+        "Missed Opportunity", "Rides per Day", "Active (Avg)"
     ]
 )
 
 st.markdown("---")
 
 # ==============================
-# 2. FULFILLMENT RATE HEATMAP
+# 2. FULFILLMENT HEATMAP
 # ==============================
-c_gran_2, _ = st.columns([1, 3])
-with c_gran_2:
+st.markdown("## 🔥 Fulfillment Rate Heatmap")
+
+col_c, col_i = st.columns([2, 5])
+with col_c:
     chart_granularity_2 = add_granularity_control(2)
 
 agg_config_2 = get_aggregation_for_granularity(
@@ -488,50 +574,57 @@ agg_config_2 = get_aggregation_for_granularity(
     df_interval_agg
 )
 
-st.subheader("🔥 Fulfillment Heat Map")
-st.caption(
-    f"Color based on **Fulfillment Rate** across {agg_config_2['time_title']}. "
-    "Higher rates (better performance) are lighter."
-)
+with col_i:
+    st.info("📊 Lighter colors = higher fulfillment. Identify peak performance periods.")
 
-fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect().encode(
+fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect(strokeWidth=1, stroke='white').encode(
     x=alt.X(
         f"{agg_config_2['time_dim']}:O", 
         title=agg_config_2['time_title'], 
-        sort=agg_config_2['time_sort']
+        sort=agg_config_2['time_sort'],
+        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
     ),
-    y=alt.Y("Neighborhood:O", title=""),
+    y=alt.Y(
+        "Neighborhood:O", 
+        title="Neighborhood",
+        axis=alt.Axis(labelFontSize=12)
+    ),
     color=alt.Color(
         "Neighborhood Fulfillment Rate:Q",
-        scale=alt.Scale(range=['red', 'white'], reverse=True),
-        title="Fulfillment Rate (%)"
+        scale=alt.Scale(
+            domain=[0, 1],
+            range=['#8B0000', '#FFD700', '#90EE90'],
+        ),
+        legend=alt.Legend(
+            title="Fulfillment Rate",
+            format=".0%",
+            orient="right",
+            titleFontSize=12
+        )
     ),
     tooltip=[
-        "Neighborhood",
+        alt.Tooltip("Neighborhood:N", title="Neighborhood"),
         alt.Tooltip(f"{agg_config_2['time_dim']}:O", title=agg_config_2['time_title']),
-        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
-        alt.Tooltip("Missed Opportunity:Q", title="Missed Opportunity"),
-        alt.Tooltip("Rides:Q", title="Rides"),
-        alt.Tooltip("Sessions:Q", title="Sessions"),
-        alt.Tooltip("Urgent (Avg):Q", format=".1f", title="Urgent Vehicles (Avg)"),
-        alt.Tooltip("Utilization:Q", format=".2f", title="Rides/Active Vehicle"),
-        alt.Tooltip("Active (Avg):Q", format=".1f")
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="✅ Fulfillment"),
+        alt.Tooltip("Rides:Q", format=",", title="🚴 Rides"),
+        alt.Tooltip("Sessions:Q", format=",", title="📱 Sessions"),
+        alt.Tooltip("Missed Opportunity:Q", format=",", title="💔 Missed"),
+        alt.Tooltip("Active (Avg):Q", format=".1f", title="🚲 Vehicles"),
     ]
 ).properties(
-    height=max(
-        MIN_CHART_HEIGHT, 
-        len(agg_config_2["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD
-    )
-)
+    height=max(MIN_CHART_HEIGHT, len(agg_config_2["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD)
+).configure_view(strokeWidth=0)
 
 st.altair_chart(fulfillment_chart, use_container_width=True)
 st.markdown("---")
 
 # ==============================
-# 3. MISSED OPPORTUNITY HEATMAP
+# 3. MISSED OPPORTUNITY
 # ==============================
-c_gran_3, _ = st.columns([1, 3])
-with c_gran_3:
+st.markdown("## 💔 Missed Opportunity Analysis")
+
+col_c, col_i = st.columns([2, 5])
+with col_c:
     chart_granularity_3 = add_granularity_control(3)
 
 agg_config_3 = get_aggregation_for_granularity(
@@ -540,49 +633,44 @@ agg_config_3 = get_aggregation_for_granularity(
     df_interval_agg
 )
 
-st.subheader("💔 Missed Opportunity (Sessions - Rides)")
-st.caption(
-    f"Color based on **absolute count** of unfulfilled sessions per {agg_config_3['time_title']}. "
-    "Darker red = highest missed opportunities."
-)
+with col_i:
+    st.info("📊 Darker red = more missed opportunities. Priority areas for improvement.")
 
-missed_opp_chart = alt.Chart(agg_config_3["df"]).mark_rect().encode(
+missed_chart = alt.Chart(agg_config_3["df"]).mark_rect(strokeWidth=1, stroke='white').encode(
     x=alt.X(
         f"{agg_config_3['time_dim']}:O",
         title=agg_config_3['time_title'],
-        sort=agg_config_3['time_sort']
+        sort=agg_config_3['time_sort'],
+        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
     ),
-    y=alt.Y("Neighborhood:O", title=""),
+    y=alt.Y("Neighborhood:O", title="Neighborhood", axis=alt.Axis(labelFontSize=12)),
     color=alt.Color(
         "Missed Opportunity:Q",
         scale=alt.Scale(scheme="reds", domainMin=0),
-        title="Absolute Count"
+        legend=alt.Legend(title="Missed Opps", orient="right", titleFontSize=12)
     ),
     tooltip=[
-        "Neighborhood",
+        alt.Tooltip("Neighborhood:N", title="Neighborhood"),
         alt.Tooltip(f"{agg_config_3['time_dim']}:O", title=agg_config_3['time_title']),
-        alt.Tooltip("Missed Opportunity:Q", title="Missed Opportunity"),
-        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
-        alt.Tooltip("Rides:Q", title="Rides"),
-        alt.Tooltip("Sessions:Q", title="Sessions"),
-        alt.Tooltip("Urgent (Avg):Q", format=".1f", title="Urgent Vehicles (Avg)"),
-        alt.Tooltip("Active (Avg):Q", format=".1f")
+        alt.Tooltip("Missed Opportunity:Q", format=",", title="💔 Missed"),
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="✅ Fulfillment"),
+        alt.Tooltip("Rides:Q", format=",", title="🚴 Rides"),
+        alt.Tooltip("Sessions:Q", format=",", title="📱 Sessions"),
     ]
 ).properties(
-    height=max(
-        MIN_CHART_HEIGHT,
-        len(agg_config_3["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD
-    )
-)
+    height=max(MIN_CHART_HEIGHT, len(agg_config_3["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD)
+).configure_view(strokeWidth=0)
 
-st.altair_chart(missed_opp_chart, use_container_width=True)
+st.altair_chart(missed_chart, use_container_width=True)
 st.markdown("---")
 
 # ==============================
-# 4. FULFILLMENT TRENDLINES
+# 4. FULFILLMENT TRENDS
 # ==============================
-c_gran_4, _ = st.columns([1, 3])
-with c_gran_4:
+st.markdown("## 📈 Fulfillment Trends by Neighborhood")
+
+col_c, col_i = st.columns([2, 5])
+with col_c:
     chart_granularity_4 = add_granularity_control(4)
 
 agg_config_4 = get_aggregation_for_granularity(
@@ -591,40 +679,44 @@ agg_config_4 = get_aggregation_for_granularity(
     df_interval_agg
 )
 
-st.subheader("📈 Fulfillment Trendlines")
-st.caption(
-    f"Tracks Fulfillment Rate (%) for **each neighborhood** across {agg_config_4['time_title']}."
-)
+with col_i:
+    st.info("📊 Compare fulfillment patterns. Look for consistent performers vs volatility.")
 
-fulfillment_trend_chart = alt.Chart(agg_config_4["df"]).mark_line(point=True).encode(
+trend_chart = alt.Chart(agg_config_4["df"]).mark_line(
+    point=alt.OverlayMarkDef(size=60, filled=True),
+    strokeWidth=3
+).encode(
     x=alt.X(
         f"{agg_config_4['time_dim']}:O",
         title=agg_config_4['time_title'],
-        sort=agg_config_4['time_sort']
+        sort=agg_config_4['time_sort'],
+        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
     ),
     y=alt.Y(
         "Neighborhood Fulfillment Rate:Q",
-        title="Fulfillment Rate (%)",
-        axis=alt.Axis(format=".1%")
+        title="Fulfillment Rate",
+        axis=alt.Axis(format=".0%", labelFontSize=12),
+        scale=alt.Scale(domain=[0, 1])
     ),
-    color=alt.Color("Neighborhood:N", title="Neighborhood"),
+    color=alt.Color("Neighborhood:N", legend=alt.Legend(titleFontSize=12)),
     tooltip=[
-        "Neighborhood",
+        alt.Tooltip("Neighborhood:N", title="Neighborhood"),
         alt.Tooltip(f"{agg_config_4['time_dim']}:O", title=agg_config_4['time_title']),
-        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
-        alt.Tooltip("Rides:Q", title="Rides"),
-        alt.Tooltip("Sessions:Q", title="Sessions"),
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="✅ Fulfillment"),
+        alt.Tooltip("Rides:Q", format=",", title="🚴 Rides"),
     ]
-).properties(height=450)
+).properties(height=500).configure_view(strokeWidth=0)
 
-st.altair_chart(fulfillment_trend_chart, use_container_width=True)
+st.altair_chart(trend_chart, use_container_width=True)
 st.markdown("---")
 
 # ==============================
-# 5. ACCUMULATIVE TREND
+# 5. AGGREGATE DEMAND
 # ==============================
-c_gran_5, _ = st.columns([1, 3])
-with c_gran_5:
+st.markdown("## 📊 Aggregate Demand Patterns")
+
+col_c, col_i = st.columns([2, 5])
+with col_c:
     chart_granularity_5 = add_granularity_control(5)
 
 agg_config_5 = get_aggregation_for_granularity(
@@ -633,10 +725,8 @@ agg_config_5 = get_aggregation_for_granularity(
     df_interval_agg
 )
 
-st.subheader("📈 Accumulative Trend")
-st.caption(
-    f"Total Rides, Sessions, and **Avg Urgent Vehicles** across all neighborhoods by {agg_config_5['time_title']}."
-)
+with col_i:
+    st.info("📊 Overall demand patterns and urgent vehicle needs. Spot peak times.")
 
 dynamic_total = agg_config_5["df"].groupby(agg_config_5["time_dim"]).agg(
     Rides=("Rides", "sum"),
@@ -651,19 +741,24 @@ dynamic_long = dynamic_total.melt(
     value_name="Count"
 )
 
-line = alt.Chart(dynamic_long).mark_line(point=True, interpolate='monotone').encode(
+demand_chart = alt.Chart(dynamic_long).mark_line(
+    point=True, 
+    strokeWidth=3,
+    interpolate='monotone'
+).encode(
     x=alt.X(
         f"{agg_config_5['time_dim']}:O",
         title=agg_config_5['time_title'],
-        sort=agg_config_5['time_sort']
+        sort=agg_config_5['time_sort'],
+        axis=alt.Axis(labelAngle=-45, labelFontSize=12)
     ),
-    y=alt.Y("Count:Q", title="Total Count"),
-    color=alt.Color("Metric:N", title="Metric"),
+    y=alt.Y("Count:Q", title="Total Count", axis=alt.Axis(labelFontSize=12)),
+    color=alt.Color("Metric:N", legend=alt.Legend(titleFontSize=12)),
     tooltip=[
-        agg_config_5["time_dim"],
-        "Metric",
-        alt.Tooltip("Count", format=".1f")
+        alt.Tooltip(agg_config_5["time_dim"], title=agg_config_5['time_title']),
+        alt.Tooltip("Metric:N", title="Metric"),
+        alt.Tooltip("Count:Q", format=",.1f", title="Count")
     ]
-).properties(height=350)
+).properties(height=450).configure_view(strokeWidth=0)
 
-st.altair_chart(line, use_container_width=True)
+st.altair_chart(demand_chart, use_container_width=True)
