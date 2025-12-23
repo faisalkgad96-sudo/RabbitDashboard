@@ -1,673 +1,669 @@
-# pages/04_Scorecard_Area.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
-import os
+import json
+import requests
+from io import BytesIO
+import datetime
 
-st.set_page_config(layout="wide", page_title="Scorecard —  ")
-st.title("🏆 Scorecard —  ")
+# ==============================
+# CONSTANTS
+# ==============================
+MIN_CHART_HEIGHT = 400
+PIXELS_PER_NEIGHBORHOOD = 30
+MAX_DATE_RANGE_DAYS = 365
 
-# Settings
-SETTINGS_DIR = "settings"
-WEIGHTS_CSV = os.path.join(SETTINGS_DIR, "order_weights.csv")
-CASE_SCORES_CSV = os.path.join(SETTINGS_DIR, "case_scores.csv")
-MOBILITY_CSV = os.path.join(SETTINGS_DIR, "mobility.csv")
-QUARTILES_CSV = os.path.join(SETTINGS_DIR, "quartiles.csv")
-
-DEFAULT_ORDER_WEIGHTS = [1.0, 0.75, 0.5, 0.25, 0.25, 0.25, 0.25]
-DEFAULT_CASE_SCORES = {
-    "Low Battery": {"moto": 2, "tric": 0},
-    "No Ride Photo": {"moto": 2, "tric": 0},
-    "No Rides Today": {"moto": 2, "tric": 0},
-    "Not Updating": {"moto": 3, "tric": 0},
-    "Out Of Fence": {"moto": 3, "tric": 0},
-    "Unlocked Without Ride": {"moto": 3, "tric": 0},
-    "Vehicle Battery Unlocked": {"moto": 3, "tric": 0},
-    "Vehicle Malfunction": {"moto": 2, "tric": 0},
-    "Active": {"moto": 0, "tric": 0},
-    "Deactivate": {"moto": 0, "tric": 0},
+# Time interval definitions
+TIME_INTERVALS = {
+    "Morning Peak (6a-12p)": (6, 11),
+    "Afternoon Peak (12p-6p)": (12, 17),
+    "Evening/Night (6p-6a)": (18, 5)  # Wraps around midnight
 }
-DEFAULT_MOBILITY = {}
+INTERVAL_ORDER = ["Morning Peak (6a-12p)", "Afternoon Peak (12p-6p)", "Evening/Night (6p-6a)"]
 
-# Helpers: settings loaders
-def load_order_weights():
-    if os.path.exists(WEIGHTS_CSV):
-        try:
-            df = pd.read_csv(WEIGHTS_CSV)
-            if "weight" in df.columns:
-                return df["weight"].astype(float).tolist()
-            return df.iloc[:, 0].astype(float).tolist()
-        except Exception:
-            st.warning("Couldn't read order_weights.csv — using defaults.")
-    return DEFAULT_ORDER_WEIGHTS
+GRANULARITY_OPTIONS = ["Hourly (0-23)", "3 Intervals"]
 
-
-def load_case_scores():
-    if os.path.exists(CASE_SCORES_CSV):
-        try:
-            df = pd.read_csv(CASE_SCORES_CSV)
-            d = {}
-            for _, r in df.iterrows():
-                case = str(r.get("case") or r.get("Case") or r.get("CASE") or "").strip()
-                if not case:
-                    continue
-                moto = r.get("moto", r.get("MOTO", 0))
-                tric = r.get("tric", r.get("TRIC", 0))
-                try:
-                    moto = float(moto)
-                except:
-                    moto = 0.0
-                try:
-                    tric = float(tric)
-                except:
-                    tric = 0.0
-                d[case] = {"moto": moto, "tric": tric}
-            if d:
-                return d
-        except Exception:
-            st.warning("Couldn't read case_scores.csv — using defaults.")
-    return DEFAULT_CASE_SCORES
-
-
-def load_mobility_map():
-    if os.path.exists(MOBILITY_CSV):
-        try:
-            df = pd.read_csv(MOBILITY_CSV)
-            cols_low = [c.lower() for c in df.columns]
-            if "name" in cols_low and "mobility" in cols_low:
-                name_col = df.columns[cols_low.index("name")]
-                mob_col = df.columns[cols_low.index("mobility")]
-                return df.set_index(name_col)[mob_col].astype(str).to_dict()
-        except Exception:
-            st.warning("Couldn't read mobility.csv — using defaults.")
-    return DEFAULT_MOBILITY
-
-
-def get_quartile(score, quartiles_df):
-    """Return quartile label for a given score."""
-    for _, row in quartiles_df.iterrows():
-        try:
-            if float(row["min"]) <= float(score) <= float(row["max"]):
-                return str(row.get("label", "")).strip()
-        except Exception:
-            continue
-    return "Unassigned"
-
-
-# Helpers: cleaning & parsing
-def clean_text_series(s: pd.Series) -> pd.Series:
-    return s.fillna("").astype(str).str.strip().str.strip('"').str.strip("'")
-
-
-def parse_cases_cell(x):
-    if pd.isna(x):
-        return []
-    if isinstance(x, (list, tuple)):
-        return [str(i).strip() for i in x if str(i).strip()]
-    s = str(x)
-    for sep in ["|", ";"]:
-        s = s.replace(sep, ",")
-    items = [p.strip().strip('"').strip("'") for p in s.split(",") if p.strip()]
-    return items
-
-
-def find_created_column(df: pd.DataFrame):
-    if "Created At" in df.columns:
-        return "Created At"
-    candidates = ["created at", "created_at", "CreatedAt", "created", "Created"]
-    cols_lower = {c.lower(): c for c in df.columns}
-    if "created at" in cols_lower:
-        return cols_lower["created at"]
-    for cand in candidates:
-        if cand in df.columns:
-            return cand
-    for c in df.columns:
-        if "created" in c.lower() or "date" in c.lower() or "time" in c.lower():
-            return c
-    return None
-
-
-def compute_task_score(case_list, mobility_type, case_scores, order_weights):
-    if not isinstance(case_list, (list, tuple)):
-        return 0.0
-    mobility_key = "moto"
-    if isinstance(mobility_type, str) and mobility_type.strip().lower().startswith("tr"):
-        mobility_key = "tric"
-    total = 0.0
-    for pos, case_name in enumerate(case_list):
-        if not case_name or not str(case_name).strip():
-            continue
-        weight = order_weights[pos] if pos < len(order_weights) else order_weights[-1]
-        key = str(case_name).strip()
-        lookup = case_scores.get(key)
-        if lookup is None:
-            for k in case_scores.keys():
-                if k.strip().lower() == key.lower():
-                    lookup = case_scores[k]
-                    break
-        if lookup is None:
-            continue
-        score_val = lookup.get(mobility_key, 0) or 0
-        try:
-            total += float(score_val) * float(weight)
-        except:
-            continue
-    return float(total)
-
-
-# Load settings
-order_weights = load_order_weights()
-case_scores = load_case_scores()
-mobility_map = load_mobility_map()
-st.sidebar.info("Settings folder: place order_weights.csv, case_scores.csv, mobility.csv (optional).")
-
-# Load quartiles from settings/quartiles.csv or fallback to defaults
-DEFAULT_QUARTILES = pd.DataFrame([
-    ["Q1", 6, 26, "Low Performer"],
-    ["Q2", 27, 47, "Mid Performer"],
-    ["Q3", 48, 68, "Upper-Mid Performer"],
-    ["Q4", 69, 90, "High Performer"],
-], columns=["quartile", "min", "max", "label"])
-
-if os.path.exists(QUARTILES_CSV):
-    try:
-        quartiles_df = pd.read_csv(QUARTILES_CSV)
-    except:
-        quartiles_df = DEFAULT_QUARTILES.copy()
-else:
-    quartiles_df = DEFAULT_QUARTILES.copy()
-
-# Upload data
-uploaded = st.file_uploader("Upload Scorecard Raw Data (.xlsx/.csv)", type=["xlsx", "xls", "csv"])
-if not uploaded:
-    st.stop()
-
-try:
-    if uploaded.name.lower().endswith(".csv"):
-        try:
-            df_raw = pd.read_csv(uploaded)
-        except UnicodeDecodeError:
-            uploaded.seek(0)
-            df_raw = pd.read_csv(uploaded, encoding="latin1")
-    else:
-        df_raw = pd.read_excel(uploaded)
-except Exception as e:
-    st.error(f"Error loading file: {e}")
-    st.stop()
-
-st.success(f"Loaded {uploaded.name} — {len(df_raw)} rows")
-
-# Auto-detect core columns
-cols_lower = {c.lower(): c for c in df_raw.columns}
-agent_col_guess = None
-cases_col_guess = None
-area_col_guess = None
-status_col_guess = None
-
-for cand in ["user name", "user", "username", "agent", "driver name", "full name"]:
-    if cand in cols_lower:
-        agent_col_guess = cols_lower[cand]
-        break
-for cand in ["cases at start", "cases", "casesatstart", "cases_at_start"]:
-    if cand in cols_lower:
-        cases_col_guess = cols_lower[cand]
-        break
-for cand in ["area", "zone", "location"]:
-    if cand in cols_lower:
-        area_col_guess = cols_lower[cand]
-        break
-for cand in ["status", "filter_success", "filtersuccess"]:
-    if cand in cols_lower:
-        status_col_guess = cols_lower[cand]
-        break
-
-# Fallback heuristics
-if agent_col_guess is None:
-    for c in df_raw.columns:
-        if "name" in c.lower() and df_raw[c].astype(str).nunique() > 1:
-            agent_col_guess = c
-            break
-if cases_col_guess is None:
-    for c in df_raw.columns:
-        if "case" in c.lower() or "cases" in c.lower():
-            cases_col_guess = c
-            break
-if area_col_guess is None:
-    for c in df_raw.columns:
-        if "area" in c.lower() or "zone" in c.lower():
-            area_col_guess = c
-            break
-
-if cases_col_guess is None or agent_col_guess is None:
-    st.error("Could not detect Agent and/or Cases column automatically. Make sure headers exist.")
-    st.stop()
-
-created_col = find_created_column(df_raw)
-if created_col is None:
-    st.error("Could not detect a date/time column (Created At). Add a 'Created At' column or similar.")
-    st.stop()
-
-# Build unique lists for filters (cleaned)
-agent_values = clean_text_series(df_raw[agent_col_guess]).replace("", np.nan).dropna().unique().tolist()
-agent_values = sorted(agent_values)
-area_values = []
-if area_col_guess and area_col_guess in df_raw.columns:
-    area_values = clean_text_series(df_raw[area_col_guess]).replace("", np.nan).dropna().unique().tolist()
-    area_values = sorted(area_values)
-cases_all = []
-if cases_col_guess in df_raw.columns:
-    parsed = df_raw[cases_col_guess].apply(parse_cases_cell).tolist()
-    for li in parsed:
-        for c in li:
-            if c and str(c).strip():
-                cases_all.append(str(c).strip())
-cases_values = sorted(list(pd.Series(cases_all).dropna().unique())) if cases_all else []
-
-# Main-page filters (single-select)
-st.markdown("### Filters")
-c1, c2, c3 = st.columns([1, 1, 1])
-with c1:
-    agent_choice = st.selectbox("Agent (single select)", options=["All"] + agent_values, index=0)
-with c2:
-    area_choice = st.selectbox("Area (single select)", options=["All"] + area_values if area_values else ["All"], index=0)
-with c3:
-    case_choice = st.selectbox("Case (single select)", options=["All"] + cases_values if cases_values else ["All"], index=0)
-
-# Preprocess & clean
-df = df_raw.copy()
-df["_agent_clean"] = clean_text_series(df[agent_col_guess])
-df["_area_clean"] = clean_text_series(df[area_col_guess]) if area_col_guess and area_col_guess in df.columns else "Unknown"
-df["_cases_list"] = df[cases_col_guess].apply(parse_cases_cell) if cases_col_guess and cases_col_guess in df.columns else [[] for _ in range(len(df))]
-df["_created_raw"] = df[created_col]
-df["_created_dt"] = pd.to_datetime(df["_created_raw"], errors="coerce")
-if df["_created_dt"].isna().all():
-    df["_created_dt"] = pd.to_datetime(df["_created_raw"].astype(str).str.slice(0, 19), errors="coerce")
-df["_created_day"] = df["_created_dt"].dt.date
-
-status_col = status_col_guess if (status_col_guess and status_col_guess in df.columns) else None
-if status_col:
-    df["_status_clean"] = clean_text_series(df[status_col]).str.lower()
-    df["_is_success"] = df["_status_clean"].isin(["success", "completed", "ok", "done", "true", "1"])
-else:
-    df["_is_success"] = True
-
-mobility_raw_col = None
-for cand in ["vehicle", "mobility", "vehicle type", "vehicle_type"]:
-    for c in df.columns:
-        if c.lower() == cand:
-            mobility_raw_col = c
-            break
-    if mobility_raw_col:
-        break
-df["_mobility_raw"] = clean_text_series(df[mobility_raw_col]) if mobility_raw_col else ""
-def resolve_mobility_for_row(agent_name, raw_val):
-    m = mobility_map.get(agent_name)
-    if m:
-        mm = str(m).strip().upper()
-        if "TRIC" in mm or mm.startswith("TR"):
-            return "TRIC"
-        return "MOTO"
-    v = str(raw_val).upper()
-    if "TRIC" in v or "TRI" in v:
-        return "TRIC"
-    if "MOTO" in v or "MOT" in v or "BIKE" in v:
-        return "MOTO"
-    return "MOTO"
-df["_mobility"] = df.apply(lambda r: resolve_mobility_for_row(r["_agent_clean"], r.get("_mobility_raw", "")), axis=1)
-
-# Filter to successful rows
-df_success = df[df["_is_success"]].copy()
-
-# Apply UI filters
-if agent_choice != "All":
-    df_success = df_success[df_success["_agent_clean"] == agent_choice]
-if area_choice != "All":
-    df_success = df_success[df_success["_area_clean"] == area_choice]
-if case_choice != "All":
-    df_success = df_success[df_success["_cases_list"].apply(lambda lst: case_choice in lst)]
-
-# Compute task scores
-if not df_success.empty:
-    df_success["_task_score"] = df_success.apply(lambda r: compute_task_score(r["_cases_list"], r["_mobility"], case_scores, order_weights), axis=1)
-else:
-    df_success["_task_score"] = pd.Series(dtype=float)
-
-# Agent & area aggregates (no avg_score column)
-if not df_success.empty:
-    agent_agg = (
-        df_success.groupby(["_area_clean", "_agent_clean"], dropna=False)
-        .agg(total_score=pd.NamedAgg(column="_task_score", aggfunc="sum"),
-             tasks=pd.NamedAgg(column="_task_score", aggfunc="count"))
-        .reset_index()
-    )
-else:
-    agent_agg = pd.DataFrame(columns=["_area_clean", "_agent_clean", "total_score", "tasks"])
-
-if not agent_agg.empty:
-    area_agg = (
-        agent_agg.groupby("_area_clean", dropna=False)
-        .agg(total_score=pd.NamedAgg(column="total_score", aggfunc="sum"),
-             successful_tasks=pd.NamedAgg(column="tasks", aggfunc="sum"),
-             agents_count=pd.NamedAgg(column="_agent_clean", aggfunc="nunique"),
-             )
-        .reset_index()
-    )
-else:
-    area_agg = pd.DataFrame(columns=["_area_clean", "total_score", "successful_tasks", "agents_count"])
-
-if not area_agg.empty:
-    area_agg = area_agg.sort_values("total_score", ascending=False).reset_index(drop=True)
-
-# TOP KPIs
-st.markdown("---")
-st.subheader("Area Summary — Overview")
-
-total_score_all = float(area_agg["total_score"].sum()) if not area_agg.empty else 0.0
-total_successful_tasks = int(area_agg["successful_tasks"].sum()) if not area_agg.empty else int(len(df_success))
-distinct_agents = int(agent_agg["_agent_clean"].nunique()) if not agent_agg.empty else (1 if (agent_choice != "All" and not df_success.empty) else 0)
-
-# Average Score (All Field Techs) calculated from agent_agg within current filters
-if not agent_agg.empty:
-    avg_all_score = float(agent_agg["total_score"].mean())
-else:
-    avg_all_score = 0.0
-
-# Top Field Tech
-if not agent_agg.empty:
-    top_agent_row = agent_agg.sort_values("total_score", ascending=False).iloc[0]
-    top_field_tech = top_agent_row["_agent_clean"]
-else:
-    top_field_tech = "—"
-
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Score (all areas)", f"{total_score_all:.2f}")
-k2.metric("Successful Tasks (filtered)", f"{total_successful_tasks:,}")
-k3.metric("Distinct Agents (seen)", f"{distinct_agents:,}")
-
-# Top Field Tech metric (k4) and Average Score (k4_alt)
-k4.metric("Top Field Tech", f"{top_field_tech}")
-
-# Insert Average Score metric in the top row (as separate small text under KPIs)
-st.markdown(f"<div style='margin-top:8px; font-size:14px'>Average Score (All Field Techs): <strong>{avg_all_score:.2f}</strong></div>", unsafe_allow_html=True)
-
-# CSS to only target the 4th metric to wrap and allow full name
-st.markdown(
-    """
-<style>
-div[data-testid="column"]:nth-of-type(4) div[data-testid="stMetricValue"] {
-    font-size: 18px !important;
-    white-space: normal !important;
-    overflow: visible !important;
-    text-overflow: initial !important;
-}
-div[data-testid="column"]:nth-of-type(4) div[data-testid="stMetricLabel"] {
-    font-size: 12px !important;
-}
-</style>
-""",
-    unsafe_allow_html=True,
+# ==============================
+# PAGE CONFIG
+# ==============================
+st.set_page_config(
+    page_title="Neighbourhood Fulfillment Dashboard", 
+    layout="wide", 
+    page_icon="📊"
 )
 
-# GLOBAL AREA TIME-SERIES
-st.markdown("---")
-st.subheader("📈 Area Performance Over Time")
-if "_created_day" not in df_success.columns or df_success["_created_day"].isna().all():
-    st.info("Created At dates not available or could not be parsed for timeline chart.")
-else:
-    area_time = df_success.groupby(["_area_clean", "_created_day"])["_task_score"].sum().reset_index()
-    area_time = area_time.rename(columns={"_area_clean": "Area", "_created_day": "Day", "_task_score": "TotalScore"})
-    if not area_time.empty:
-        sel_area = alt.selection_multi(fields=["Area"], bind="legend")
-        area_line = (
-            alt.Chart(area_time)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("Day:T", title="Day", axis=alt.Axis(format="%Y-%m-%d")),
-                y=alt.Y("TotalScore:Q", title="Total Score"),
-                color=alt.Color("Area:N", title="Area"),
-                opacity=alt.condition(sel_area, alt.value(1), alt.value(0.15)),
-                tooltip=["Area", "Day", "TotalScore"]
-            )
-            .add_params(sel_area)
-            .properties(height=420)
-        )
-        st.altair_chart(area_line, use_container_width=True)
+# ==============================
+# CUSTOM STYLING
+# ==============================
+st.markdown("""
+<style>
+    /* Use theme-aware styling instead of hardcoded colors */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+    }
+    
+    /* Reduce padding in columns for tighter layout */
+    .stRadio > label {
+        padding-right: 15px;
+        margin-right: 0px; 
+    }
+    
+    /* Ensure metrics inherit theme background */
+    [data-testid="stMetric"] {
+        background-color: transparent;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📊 Fulfillment Dashboard")
+
+# ==============================
+# HELPER FUNCTIONS
+# ==============================
+
+@st.cache_data(ttl=3600)
+def fetch_heat_data(api_token, start_date_str, end_date_str, group_by="neighborhood"):
+    """Fetches data from Rabbit API with error handling."""
+    url = "https://dashboard.rabbit-api.app/export"
+    
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json"
+    }
+
+    filters_payload = {
+        "startDate": start_date_str,
+        "endDate": end_date_str,
+        "areas": [],
+        "groupBy": group_by
+    }
+
+    payload = {
+        "module": "HeatData",
+        "filters": json.dumps(filters_payload)
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code != 200:
+            st.error(f"❌ API Error {response.status_code}: {response.text}")
+            return None
+
+        content_type = response.headers.get("Content-Type", "")
+
+        if "application/vnd.openxmlformats" in content_type:
+            return pd.read_excel(BytesIO(response.content))
+        elif "csv" in content_type:
+            return pd.read_csv(BytesIO(response.content))
+        else:
+            return pd.DataFrame(response.json())
+        
+    except requests.exceptions.Timeout:
+        st.error("❌ Request timed out. Please try again.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Connection Error: {e}")
+        return None
+
+
+def get_time_interval(hour):
+    """Maps an hour (0-23) to a predefined time interval."""
+    if 6 <= hour <= 11:
+        return "Morning Peak (6a-12p)"
+    elif 12 <= hour <= 17:
+        return "Afternoon Peak (12p-6p)"
     else:
-        st.info("Not enough area-time data to plot.")
-
-# AREA DETAILS
-st.markdown("---")
-st.subheader("Area details (expand a section to view agent ranks & charts)")
-areas_to_show = area_agg["_area_clean"].tolist() if not area_agg.empty else ([area_choice] if area_choice != "All" else [])
-if not areas_to_show:
-    st.info("No area details to show for the current filters.")
-else:
-    for area_name in areas_to_show:
-        row = area_agg[area_agg["_area_clean"] == area_name]
-        if row.empty:
-            df_area = df_success[df_success["_area_clean"] == area_name]
-            total_score = df_area["_task_score"].sum() if not df_area.empty else 0.0
-            successful_tasks = len(df_area)
-            distinct_agents_count = df_area["_agent_clean"].nunique() if not df_area.empty else 0
-        else:
-            total_score = float(row["total_score"].iat[0])
-            successful_tasks = int(row["successful_tasks"].iat[0])
-            distinct_agents_count = int(row["agents_count"].iat[0])
-
-        # Average Score (Area) computed from agent_agg for that area
-        if not agent_agg.empty and area_name in agent_agg["_area_clean"].values:
-            area_agents = agent_agg[agent_agg["_area_clean"] == area_name]
-            avg_area_score = float(area_agents["total_score"].mean()) if not area_agents.empty else 0.0
-        else:
-            avg_area_score = 0.0
-
-        with st.expander(f"{area_name} — Total Score: {total_score:.2f} — Tasks: {successful_tasks} — Agents: {distinct_agents_count}", expanded=False):
-            a1, a2, a3, a4 = st.columns([1, 1, 1, 2])
-            a1.metric("Total Score", f"{total_score:.2f}")
-            a2.metric("Successful Tasks", f"{successful_tasks:,}")
-            a3.metric("Distinct Agents", f"{distinct_agents_count:,}")
-            a4.metric("Average Score (Area)", f"{avg_area_score:.2f}")
-
-            # Agent ranking table with quartiles
-            agents_in_area = agent_agg[agent_agg["_area_clean"] == area_name].sort_values("total_score", ascending=False)
-            if agents_in_area.empty:
-                st.info("No agent score data for this area under current filters.")
-            else:
-
-                # Build dataframe (Agent, Score, Tasks)
-                agents_display = agents_in_area[["_agent_clean", "total_score", "tasks"]].rename(
-                    columns={
-                        "_agent_clean": "Agent",
-                        "total_score": "Score",
-                        "tasks": "Tasks",
-                    }
-                )
-
-                # Clean Agent names
-                agents_display["Agent"] = (
-                    agents_display["Agent"]
-                    .astype(str)
-                    .str.strip()
-                    .str.strip('"')
-                    .str.strip("'")
-                )
-
-                # Load quartiles from settings folder
-                try:
-                    quartiles_df = pd.read_csv(os.path.join("settings", "quartiles.csv"))
-                except:
-                    quartiles_df = pd.DataFrame([
-                        ["Q1", 6, 26, "Low Performer"],
-                        ["Q2", 27, 47, "Mid Performer"],
-                        ["Q3", 48, 68, "Upper-Mid Performer"],
-                        ["Q4", 69, 90, "High Performer"],
-                    ], columns=["quartile", "min", "max", "label"])
-
-                # Function to classify quartile
-                def get_quartile_label(score):
-                    for _, row in quartiles_df.iterrows():
-                        try:
-                            if float(row["min"]) <= float(score) <= float(row["max"]):
-                                return row.get("quartile", "") + " – " + str(row.get("label", ""))
-                        except:
-                            continue
-                    return "Unassigned"
-
-                # Add Quartile column
-                agents_display["Quartile"] = agents_display["Score"].apply(get_quartile_label)
-
-                # Reset index for display and hide index
-                agents_display = agents_display.reset_index(drop=True)
-
-                # Show table
-                st.markdown("**Agent Ranking**")
-                st.dataframe(
-                    agents_display.style.format({"Score": "{:.2f}"}),
-                    use_container_width=True,
-                    height=280,
-                    hide_index=True
-                )
-
-                # Agent bars
-                st.markdown("**Agent Scores (bars)**")
-                bar_df = agents_display.copy()
-
-                if not bar_df.empty:
-                    bar_chart = (
-                        alt.Chart(bar_df)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("Score:Q"),
-                            y=alt.Y("Agent:N", sort="-x"),
-                            color=alt.Color("Quartile:N", legend=alt.Legend(title="Quartile")),
-                            tooltip=["Agent", "Score", "Tasks", "Quartile"]
-                        )
-                        .properties(height=min(300, 40 + 25 * len(bar_df)))
-                    )
-                    st.altair_chart(bar_chart, use_container_width=True)
-
-            # Case mix pie
-            st.markdown("**Case Mix (this area's successful tasks)**")
-            df_area_tasks = df_success[df_success["_area_clean"] == area_name]
-            all_cases = []
-            for li in df_area_tasks["_cases_list"].tolist():
-                all_cases.extend([c for c in li if c])
-            if all_cases:
-                case_counts = pd.Series(all_cases).value_counts().reset_index()
-                case_counts.columns = ["Case", "Count"]
-                pie = (
-                    alt.Chart(case_counts)
-                    .mark_arc()
-                    .encode(theta=alt.Theta("Count:Q"), color=alt.Color("Case:N"), tooltip=["Case", "Count"])
-                    .properties(height=300)
-                )
-                st.altair_chart(pie, use_container_width=True)
-            else:
-                st.info("No cases found for this area under current filters.")
-
-            # Per-area agent time-series
-            st.markdown("**📈 Agent Performance Over Time**")
-            df_area_ts = df_success[df_success["_area_clean"] == area_name].copy()
-            if ("_created_day" in df_area_ts.columns) and (not df_area_ts["_created_day"].isna().all()):
-                agent_time = df_area_ts.groupby(["_agent_clean", "_created_day"])["_task_score"].sum().reset_index()
-                agent_time = agent_time.rename(columns={"_agent_clean": "Agent", "_created_day": "Day", "_task_score": "TotalScore"})
-                if not agent_time.empty:
-                    sel_agent = alt.selection_multi(fields=["Agent"], bind="legend")
-                    agent_line = (
-                        alt.Chart(agent_time)
-                        .mark_line(point=True)
-                        .encode(
-                            x=alt.X("Day:T", title="Day", axis=alt.Axis(format="%Y-%m-%d")),
-                            y=alt.Y("TotalScore:Q", title="Total Score"),
-                            color=alt.Color("Agent:N", title="Agent"),
-                            opacity=alt.condition(sel_agent, alt.value(1), alt.value(0.15)),
-                            tooltip=["Agent", "Day", "TotalScore"]
-                        )
-                        .add_params(sel_agent)
-                        .properties(height=360)
-                    )
-                    st.altair_chart(agent_line, use_container_width=True)
-                else:
-                    st.info("Not enough agent time-series data for this area.")
-            else:
-                st.info("Created At dates not available or could not be parsed for agent timeline.")
-
-            st.markdown("---")
-
-# Downloads
-st.markdown("---")
-st.subheader("Download aggregated results (filtered)")
-col_d1, col_d2 = st.columns(2)
-with col_d1:
-    csv_area = area_agg.to_csv(index=False).encode("utf-8")
-    st.download_button("Download area_aggregates.csv", csv_area, file_name="area_aggregates.csv", mime="text/csv")
-with col_d2:
-    csv_agent = agent_agg.to_csv(index=False).encode("utf-8")
-    st.download_button("Download agent_aggregates.csv", csv_agent, file_name="agent_aggregates.csv", mime="text/csv")
-
-st.success("Area View ready.")
+        return "Evening/Night (6p-6a)"
 
 
+@st.cache_data(ttl=3600)
+def process_data(df):
+    """Standardizes column names and parses dates."""
+    df_copy = df.copy()
+    df_copy.columns = df_copy.columns.str.strip()
+    
+    # Required columns check
+    required_cols = [
+        "Area", "Neighborhood", "Start Date - Local",
+        "Sessions", "Rides", "Active Vehicles", "Urgent Vehicles"
+    ]
+    
+    missing_cols = [col for col in required_cols if col not in df_copy.columns]
+    if missing_cols:
+        st.error(f"❌ Missing columns: {missing_cols}")
+        st.info(f"Available columns: {list(df_copy.columns)}")
+        return None
 
-# ================= TIME TO FIRST / LAST ACTION METRICS =================
-# Requires an 'Action' column with OPS_USER_CHECKIN / OPS_USER_CHECKOUT
+    # Date processing
+    df_copy["Start Date - Local"] = pd.to_datetime(
+        df_copy["Start Date - Local"], 
+        errors="coerce"
+    )
+    
+    # Check for failed date parsing
+    if df_copy["Start Date - Local"].isna().all():
+        st.error("❌ Failed to parse dates. Please check date format.")
+        return None
+    
+    df_copy["_hour"] = df_copy["Start Date - Local"].dt.hour
+    df_copy["_date"] = df_copy["Start Date - Local"].dt.date.astype(str)
+    df_copy["_time_interval"] = df_copy["_hour"].apply(get_time_interval)
 
-action_col_guess = None
-for cand in ["action", "event", "activity", "type"]:
-    if cand in cols_lower:
-        action_col_guess = cols_lower[cand]
-        break
+    return df_copy
 
-if action_col_guess:
-    df["_action_clean"] = clean_text_series(df[action_col_guess]).str.upper()
 
-    time_rows = []
-    for (agent, day), g in df.groupby(["_agent_clean", "_created_day"]):
-        g = g.sort_values("_created_dt")
-
-        checkins = g[g["_action_clean"] == "OPS_USER_CHECKIN"]
-        checkouts = g[g["_action_clean"] == "OPS_USER_CHECKOUT"]
-
-        if checkins.empty or checkouts.empty:
-            continue
-
-        checkin_time = checkins["_created_dt"].iloc[0]
-        checkout_time = checkouts["_created_dt"].iloc[-1]
-
-        actions = g[~g["_action_clean"].isin(["OPS_USER_CHECKIN", "OPS_USER_CHECKOUT"])]
-
-        first_action = actions[actions["_created_dt"] > checkin_time]
-        last_action = actions[actions["_created_dt"] < checkout_time]
-
-        time_rows.append({
-            "Agent": agent,
-            "Day": day,
-            "Time to First Action (min)": (
-                (first_action["_created_dt"].iloc[0] - checkin_time).total_seconds() / 60
-                if not first_action.empty else None
-            ),
-            "Time Since Last Action (min)": (
-                (checkout_time - last_action["_created_dt"].iloc[-1]).total_seconds() / 60
-                if not last_action.empty else None
-            ),
+@st.cache_data(ttl=3600)
+def calculate_metrics(df_grouped, time_column):
+    """Calculates fulfillment, utilization, and average vehicle metrics."""
+    agg_df = (
+        df_grouped.groupby(["Neighborhood", time_column])
+        .agg({
+            "Sessions": "sum",
+            "Active Vehicles": "sum",
+            "Urgent Vehicles": "sum",
+            "Rides": "sum",
+            "Start Date - Local": "nunique" 
         })
-
-    time_metrics_df = pd.DataFrame(time_rows)
-
-    agent_time_summary = (
-        time_metrics_df
-        .groupby("Agent", dropna=False)
-        .agg(
-            Avg_Time_to_First_Action_Min=("Time to First Action (min)", "mean"),
-            Avg_Time_Since_Last_Action_Min=("Time Since Last Action (min)", "mean"),
-        )
-        .round(1)
+        .rename(columns={"Start Date - Local": "Snapshots"})
         .reset_index()
     )
-else:
-    agent_time_summary = pd.DataFrame(columns=[
-        "Agent",
-        "Avg_Time_to_First_Action_Min",
-        "Avg_Time_Since_Last_Action_Min"
-    ])
+
+    # Calculate derived metrics
+    agg_df["Neighborhood Fulfillment Rate"] = np.where(
+        agg_df["Sessions"] > 0,
+        agg_df["Rides"] / agg_df["Sessions"],
+        0
+    )
+    agg_df["Missed Opportunity"] = agg_df["Sessions"] - agg_df["Rides"]
+    agg_df["Active (Avg)"] = np.where(
+        agg_df["Snapshots"] > 0, 
+        agg_df["Active Vehicles"] / agg_df["Snapshots"], 
+        0
+    )
+    agg_df["Urgent (Avg)"] = np.where(
+        agg_df["Snapshots"] > 0, 
+        agg_df["Urgent Vehicles"] / agg_df["Snapshots"], 
+        0
+    )
+    agg_df["Utilization"] = np.where(
+        agg_df["Active (Avg)"] > 0, 
+        agg_df["Rides"] / agg_df["Active (Avg)"], 
+        0
+    )
+    agg_df["Utilization"] = agg_df["Utilization"].replace([np.nan, np.inf], 0)
+    
+    return agg_df
+
+
+def validate_date_range(start_date, end_date):
+    """Validates that date range is sensible."""
+    if start_date > end_date:
+        return False, "Start date must be before end date."
+    
+    date_diff = (end_date - start_date).days
+    if date_diff > MAX_DATE_RANGE_DAYS:
+        return False, f"Date range too large. Maximum is {MAX_DATE_RANGE_DAYS} days."
+    
+    return True, ""
+
+
+def add_granularity_control(chart_num, default_index=0):
+    """Creates a consistent granularity radio button control."""
+    return st.radio(
+        f"Chart {chart_num} Granularity",
+        GRANULARITY_OPTIONS,
+        key=f"granularity_{chart_num}",
+        index=default_index,
+        horizontal=True
+    )
+
+
+def get_aggregation_for_granularity(granularity, df_hourly, df_interval):
+    """Returns the appropriate aggregated dataframe and metadata based on granularity."""
+    is_hourly = granularity == GRANULARITY_OPTIONS[0]
+    return {
+        "df": df_hourly if is_hourly else df_interval,
+        "time_dim": "_hour" if is_hourly else "_time_interval",
+        "time_title": "Hour of Day" if is_hourly else "Time Interval",
+        "time_sort": None if is_hourly else INTERVAL_ORDER
+    }
+
+
+# ==============================
+# SESSION STATE INITIALIZATION
+# ==============================
+if "data" not in st.session_state:
+    st.session_state.data = None
+
+# Default dates
+today = datetime.date.today()
+week_ago = today - datetime.timedelta(days=7)
+
+# ==============================
+# SIDEBAR: DATA SOURCE
+# ==============================
+with st.sidebar:
+    st.header("Data Source")
+    source_type = st.radio("Choose Source:", ["🔌 Live API", "📂 File Upload"])
+    
+    # Check for API token in secrets
+    api_token = st.secrets.get("RABBIT_TOKEN") if hasattr(st, 'secrets') else None
+
+    if source_type == "🔌 Live API":
+        # Date inputs
+        start_d = st.date_input("Start Date", value=week_ago, key="start_d")
+        end_d = st.date_input("End Date", value=today, key="end_d")
+        
+        # Validate date range
+        is_valid, error_msg = validate_date_range(start_d, end_d)
+        if not is_valid:
+            st.error(error_msg)
+        
+        if api_token is None:
+            st.caption("Token not found in `secrets.toml`. Please enter manually.")
+            st.warning("⚠️ Never share screenshots containing your API token!")
+            api_token = st.text_input(
+                "API Token", 
+                value="", 
+                type="password", 
+                key="manual_token_input"
+            )
+            button_disabled = not api_token or not is_valid
+        else:
+            st.caption("✅ Using token from `secrets.toml`")
+            button_disabled = not is_valid
+        
+        if st.button("Fetch Live Data", type="primary", disabled=button_disabled):
+            with st.spinner("Fetching and processing data..."):
+                raw_df = fetch_heat_data(
+                    api_token, 
+                    f"{start_d}T00:00:00.000Z", 
+                    f"{end_d}T23:59:00.000Z"
+                )
+                if raw_df is not None:
+                    if not raw_df.empty:
+                        processed = process_data(raw_df)
+                        if processed is not None:
+                            st.session_state.data = processed
+                            st.success(f"✅ Loaded {len(raw_df):,} rows!")
+                            st.rerun()
+                    else:
+                        st.warning("Data fetched but is empty.")
+
+    else:  # File Upload
+        uploaded_file = st.file_uploader(
+            "Upload Excel/CSV", 
+            type=["xlsx", "xls", "csv"]
+        )
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith(".csv"):
+                    raw_df = pd.read_csv(uploaded_file)
+                else:
+                    raw_df = pd.read_excel(uploaded_file)
+                
+                processed = process_data(raw_df)
+                if processed is not None:
+                    st.session_state.data = processed
+                    st.success(f"✅ Loaded {len(raw_df):,} rows from file!")
+                    st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error reading file: {e}")
+    
+    # Clear data button
+    st.divider()
+    if st.session_state.data is not None:
+        if st.button("🗑️ Clear Data", type="secondary"):
+            st.session_state.data = None
+            st.rerun()
+
+# ==============================
+# MAIN DASHBOARD
+# ==============================
+
+if st.session_state.data is None:
+    st.info("👈 Please fetch data via API or upload a file from the sidebar.")
+    st.stop()
+
+df = st.session_state.data
+
+# ==============================
+# FILTERS
+# ==============================
+st.divider()
+c1, c2, c3 = st.columns([1, 2, 1])
+
+areas = sorted(df["Area"].dropna().unique().tolist())
+dates = sorted(df["_date"].dropna().unique().tolist())
+
+with c1:
+    selected_area = st.selectbox(
+        "📍 Select Area", 
+        areas, 
+        index=0 if areas else 0
+    )
+
+with c2:
+    selected_dates = st.multiselect(
+        "📅 Select Dates", 
+        dates, 
+        default=dates[:1]  # Simplified default selection
+    )
+
+# Apply Filters
+df_filtered = df[
+    (df["Area"] == selected_area) & 
+    (df["_date"].isin(selected_dates)) &
+    (df["Neighborhood"].str.lower() != "no neighborhood")
+]
+
+if df_filtered.empty:
+    st.warning("⚠️ No data available for the selected filters.")
+    st.stop()
+
+# ==============================
+# DATA PREPARATION (GLOBAL)
+# ==============================
+df_hourly_agg = calculate_metrics(df_filtered, "_hour")
+df_interval_agg = calculate_metrics(df_filtered, "_time_interval")
+
+# Apply categorical ordering to intervals
+df_interval_agg["_time_interval"] = pd.Categorical(
+    df_interval_agg["_time_interval"], 
+    categories=INTERVAL_ORDER, 
+    ordered=True
+)
+
+# Scorecard metrics (period-level)
+daily_active_avg = (
+    df_filtered.groupby(["Neighborhood", "_date"])["Active Vehicles"]
+    .mean()
+    .reset_index()
+    .rename(columns={"Active Vehicles": "Daily Active Avg"})
+)
+period_active_avg = (
+    daily_active_avg.groupby("Neighborhood")["Daily Active Avg"]
+    .mean()
+    .reset_index()
+    .rename(columns={"Daily Active Avg": "Active (Avg)"})
+)
+total_avg_active_scooters = period_active_avg["Active (Avg)"].sum()
+
+# ==============================
+# DOWNLOAD SECTION
+# ==============================
+with st.expander("📥 Download Data"):
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            label="Download Hourly Data (CSV)",
+            data=df_hourly_agg.to_csv(index=False).encode('utf-8'),
+            file_name=f'hourly_data_{selected_area}_{len(selected_dates)}days.csv',
+            mime='text/csv',
+        )
+    with col2:
+        st.download_button(
+            label="Download Interval Data (CSV)",
+            data=df_interval_agg.to_csv(index=False).encode('utf-8'),
+            file_name=f'interval_data_{selected_area}_{len(selected_dates)}days.csv',
+            mime='text/csv',
+        )
+
+st.markdown("---")
+
+# ==============================
+# TOP LEVEL METRICS
+# ==============================
+total_rides = df_filtered["Rides"].sum()
+total_sessions = df_filtered["Sessions"].sum()
+unique_neighborhoods = df_filtered["Neighborhood"].nunique()
+total_missed_opportunity = total_sessions - total_rides
+
+m1, m2, m3, m4, m5 = st.columns(5)
+
+m1.metric("Total Rides", f"{total_rides:,}")
+m2.metric("Total Sessions", f"{total_sessions:,}")
+m3.metric("Avg Active Scooters", f"{total_avg_active_scooters:,.1f}")
+m4.metric("Total Missed Opp.", f"{total_missed_opportunity:,}")
+m5.metric("Active Neighborhoods", unique_neighborhoods)
+
+st.markdown("---")
+
+# ==============================
+# 1. NEIGHBORHOOD LEADERBOARD
+# ==============================
+st.subheader("📊 Neighborhood Leaderboard")
+
+period_summary = df_filtered.groupby("Neighborhood").agg(
+    Rides=("Rides", "sum"),
+    Sessions=("Sessions", "sum"),
+).reset_index()
+
+agg = pd.merge(period_summary, period_active_avg, on="Neighborhood")
+num_selected_days = len(df_filtered["_date"].unique())
+agg["Rides per Day"] = agg["Rides"] / num_selected_days
+agg["RPDPV"] = np.where(
+    agg["Active (Avg)"] > 0, 
+    agg["Rides per Day"] / agg["Active (Avg)"], 
+    0
+)
+agg["Missed Opportunity"] = agg["Sessions"] - agg["Rides"]
+
+st.dataframe(
+    agg.sort_values("RPDPV", ascending=False),
+    use_container_width=True,
+    column_config={
+        "RPDPV": st.column_config.ProgressColumn(
+            "Rides/Day/Vehicle",
+            help="Rides per Day per Average Active Vehicle",
+            format="%.2f",
+            min_value=0,
+            max_value=agg["RPDPV"].max(),
+        ),
+        "Active (Avg)": st.column_config.NumberColumn(format="%.1f"),
+        "Missed Opportunity": st.column_config.NumberColumn(format="%d")
+    },
+    hide_index=True,
+    column_order=[
+        "Neighborhood", "Rides", "Sessions", "Missed Opportunity", 
+        "Rides per Day", "Active (Avg)", "RPDPV"
+    ]
+)
+
+st.markdown("---")
+
+# ==============================
+# 2. FULFILLMENT RATE HEATMAP
+# ==============================
+c_gran_2, _ = st.columns([1, 3])
+with c_gran_2:
+    chart_granularity_2 = add_granularity_control(2)
+
+agg_config_2 = get_aggregation_for_granularity(
+    chart_granularity_2, 
+    df_hourly_agg, 
+    df_interval_agg
+)
+
+st.subheader("🔥 Fulfillment Heat Map")
+st.caption(
+    f"Color based on **Fulfillment Rate** across {agg_config_2['time_title']}. "
+    "Higher rates (better performance) are lighter."
+)
+
+fulfillment_chart = alt.Chart(agg_config_2["df"]).mark_rect().encode(
+    x=alt.X(
+        f"{agg_config_2['time_dim']}:O", 
+        title=agg_config_2['time_title'], 
+        sort=agg_config_2['time_sort']
+    ),
+    y=alt.Y("Neighborhood:O", title=""),
+    color=alt.Color(
+        "Neighborhood Fulfillment Rate:Q",
+        scale=alt.Scale(range=['red', 'white'], reverse=True),
+        title="Fulfillment Rate (%)"
+    ),
+    tooltip=[
+        "Neighborhood",
+        alt.Tooltip(f"{agg_config_2['time_dim']}:O", title=agg_config_2['time_title']),
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
+        alt.Tooltip("Missed Opportunity:Q", title="Missed Opportunity"),
+        alt.Tooltip("Rides:Q", title="Rides"),
+        alt.Tooltip("Sessions:Q", title="Sessions"),
+        alt.Tooltip("Urgent (Avg):Q", format=".1f", title="Urgent Vehicles (Avg)"),
+        alt.Tooltip("Utilization:Q", format=".2f", title="Rides/Active Vehicle"),
+        alt.Tooltip("Active (Avg):Q", format=".1f")
+    ]
+).properties(
+    height=max(
+        MIN_CHART_HEIGHT, 
+        len(agg_config_2["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD
+    )
+)
+
+st.altair_chart(fulfillment_chart, use_container_width=True)
+st.markdown("---")
+
+# ==============================
+# 3. MISSED OPPORTUNITY HEATMAP
+# ==============================
+c_gran_3, _ = st.columns([1, 3])
+with c_gran_3:
+    chart_granularity_3 = add_granularity_control(3)
+
+agg_config_3 = get_aggregation_for_granularity(
+    chart_granularity_3,
+    df_hourly_agg,
+    df_interval_agg
+)
+
+st.subheader("💔 Missed Opportunity (Sessions - Rides)")
+st.caption(
+    f"Color based on **absolute count** of unfulfilled sessions per {agg_config_3['time_title']}. "
+    "Darker red = highest missed opportunities."
+)
+
+missed_opp_chart = alt.Chart(agg_config_3["df"]).mark_rect().encode(
+    x=alt.X(
+        f"{agg_config_3['time_dim']}:O",
+        title=agg_config_3['time_title'],
+        sort=agg_config_3['time_sort']
+    ),
+    y=alt.Y("Neighborhood:O", title=""),
+    color=alt.Color(
+        "Missed Opportunity:Q",
+        scale=alt.Scale(scheme="reds", domainMin=0),
+        title="Absolute Count"
+    ),
+    tooltip=[
+        "Neighborhood",
+        alt.Tooltip(f"{agg_config_3['time_dim']}:O", title=agg_config_3['time_title']),
+        alt.Tooltip("Missed Opportunity:Q", title="Missed Opportunity"),
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
+        alt.Tooltip("Rides:Q", title="Rides"),
+        alt.Tooltip("Sessions:Q", title="Sessions"),
+        alt.Tooltip("Urgent (Avg):Q", format=".1f", title="Urgent Vehicles (Avg)"),
+        alt.Tooltip("Active (Avg):Q", format=".1f")
+    ]
+).properties(
+    height=max(
+        MIN_CHART_HEIGHT,
+        len(agg_config_3["df"]["Neighborhood"].unique()) * PIXELS_PER_NEIGHBORHOOD
+    )
+)
+
+st.altair_chart(missed_opp_chart, use_container_width=True)
+st.markdown("---")
+
+# ==============================
+# 4. FULFILLMENT TRENDLINES
+# ==============================
+c_gran_4, _ = st.columns([1, 3])
+with c_gran_4:
+    chart_granularity_4 = add_granularity_control(4)
+
+agg_config_4 = get_aggregation_for_granularity(
+    chart_granularity_4,
+    df_hourly_agg,
+    df_interval_agg
+)
+
+st.subheader("📈 Fulfillment Trendlines")
+st.caption(
+    f"Tracks Fulfillment Rate (%) for **each neighborhood** across {agg_config_4['time_title']}."
+)
+
+fulfillment_trend_chart = alt.Chart(agg_config_4["df"]).mark_line(point=True).encode(
+    x=alt.X(
+        f"{agg_config_4['time_dim']}:O",
+        title=agg_config_4['time_title'],
+        sort=agg_config_4['time_sort']
+    ),
+    y=alt.Y(
+        "Neighborhood Fulfillment Rate:Q",
+        title="Fulfillment Rate (%)",
+        axis=alt.Axis(format=".1%")
+    ),
+    color=alt.Color("Neighborhood:N", title="Neighborhood"),
+    tooltip=[
+        "Neighborhood",
+        alt.Tooltip(f"{agg_config_4['time_dim']}:O", title=agg_config_4['time_title']),
+        alt.Tooltip("Neighborhood Fulfillment Rate:Q", format=".1%", title="Fulfillment Rate"),
+        alt.Tooltip("Rides:Q", title="Rides"),
+        alt.Tooltip("Sessions:Q", title="Sessions"),
+    ]
+).properties(height=450)
+
+st.altair_chart(fulfillment_trend_chart, use_container_width=True)
+st.markdown("---")
+
+# ==============================
+# 5. ACCUMULATIVE TREND
+# ==============================
+c_gran_5, _ = st.columns([1, 3])
+with c_gran_5:
+    chart_granularity_5 = add_granularity_control(5)
+
+agg_config_5 = get_aggregation_for_granularity(
+    chart_granularity_5,
+    df_hourly_agg,
+    df_interval_agg
+)
+
+st.subheader("📈 Accumulative Trend")
+st.caption(
+    f"Total Rides, Sessions, and **Avg Urgent Vehicles** across all neighborhoods by {agg_config_5['time_title']}."
+)
+
+dynamic_total = agg_config_5["df"].groupby(agg_config_5["time_dim"]).agg(
+    Rides=("Rides", "sum"),
+    Sessions=("Sessions", "sum"),
+    Urgent_Vehicles=("Urgent (Avg)", "sum")
+).reset_index()
+
+dynamic_long = dynamic_total.melt(
+    id_vars=[agg_config_5["time_dim"]],
+    value_vars=["Rides", "Sessions", "Urgent_Vehicles"],
+    var_name="Metric",
+    value_name="Count"
+)
+
+line = alt.Chart(dynamic_long).mark_line(point=True, interpolate='monotone').encode(
+    x=alt.X(
+        f"{agg_config_5['time_dim']}:O",
+        title=agg_config_5['time_title'],
+        sort=agg_config_5['time_sort']
+    ),
+    y=alt.Y("Count:Q", title="Total Count"),
+    color=alt.Color("Metric:N", title="Metric"),
+    tooltip=[
+        agg_config_5["time_dim"],
+        "Metric",
+        alt.Tooltip("Count", format=".1f")
+    ]
+).properties(height=350)
+
+st.altair_chart(line, use_container_width=True)
